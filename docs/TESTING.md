@@ -95,6 +95,30 @@ E2E uses in-process duplex I/O (`tests/common/mod.rs`) so coverage attributes to
 - **proptest** finds panic/invariant bugs; **fuzz** finds parser crashes and weird UTF-8/byte sequences overnight — keep both.
 - Integration tests still appear in some tarpaulin line totals; `--ignore-tests` reduces noise but e2e must remain *run* (do not `--exclude-files '**/tests/**'` if that skips executing them).
 
+## Gate A acceptance pack (A9)
+
+Single adversarial suite covering public-host blockers for slices **A1–A8 + A10–A12**:
+
+```bash
+cargo test -p ircd --test gate_a_acceptance_e2e
+```
+
+| Test | Slice |
+|------|-------|
+| `a1_cap_ls_has_no_false_ads` | A1 |
+| `a2_nick_steal_does_not_transfer_ops` | A2 |
+| `a3_oversized_line_417` | A3 |
+| `a4_kick_revokes_channel_send` | A4 |
+| `a5_plaintext_sasl_blocked_when_tls_required` | A5 |
+| `a6_session_has_no_lock_across_await` | A6 |
+| `a7_channel_quotas` | A7 |
+| `a8_casemap_and_cap_end` | A8 |
+| `a10_ws_origin_policy` | A10 |
+| `a11_refuse_world_readable_secret` | A11 |
+| `a12_part_nonmember_442` | A12 |
+
+Must stay green on NewDev before public zero1 bind (with Tasks #2210 / #2193). Also re-run the tarpaulin command in §Coverage after Gate A landings.
+
 ## Tasks trail
 
 | ID | Slice |
