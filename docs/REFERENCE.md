@@ -43,5 +43,6 @@ We use **TOML** (`config.example.toml`), not Unreal’s block language. Knobs ma
 | `listen { … options { tls; } }` + cert files | `[[listen]] tls = true` + `cert` / `key` |
 | `oper { }` | `[oper]` (`enabled`, `name`, `password`) |
 | Channel history / replay | `[history]` sqlite path + `CHATHISTORY LATEST` + JOIN auto-replay |
+| NickServ-style accounts | `[[accounts]]` + IRCv3 **SASL PLAIN** (`AUTHENTICATE`) + `account-tag` |
 
 CLI `--bind` / `--tls-bind` replace the listen list when present (handy for lab). Prefer `--config` for standing instances.

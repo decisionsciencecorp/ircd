@@ -48,3 +48,12 @@ enabled = true
 path = "./data/history.sqlite3"
 max_per_channel = 1000
 auto_replay_on_join = 50
+
+# Built-in SASL PLAIN accounts (lab plaintext — do not reuse on a public host).
+[[accounts]]
+name = "alice"
+password = "alice-pass"
+
+[[accounts]]
+name = "bob"
+password = "bob-pass"

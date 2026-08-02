@@ -15,6 +15,15 @@ pub struct Config {
     pub oper: OperSection,
     #[serde(default)]
     pub history: HistorySection,
+    /// Built-in SASL PLAIN accounts (no external services in v0).
+    #[serde(default)]
+    pub accounts: Vec<AccountSection>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct AccountSection {
+    pub name: String,
+    pub password: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -127,6 +136,7 @@ impl Default for Config {
             }],
             oper: OperSection::default(),
             history: HistorySection::default(),
+            accounts: Vec::new(),
         }
     }
 }

@@ -13,14 +13,41 @@ use tracing::info;
 use crate::{BusMsg, Shared, VERSION};
 
 /// Starter IRCv3 caps (advertise even when payload is still thin).
-const SUPPORTED_CAPS: &[&str] = &[
+const BASE_CAPS: &[&str] = &[
     "multi-prefix",
     "server-time",
     "message-tags",
     "away-notify",
     "batch",
     "chathistory",
+    "account-tag",
 ];
+
+fn advertised_caps(has_accounts: bool) -> Vec<String> {
+    let mut caps: Vec<String> = BASE_CAPS.iter().map(|s| (*s).to_string()).collect();
+    if has_accounts {
+        caps.push("sasl=PLAIN".to_string());
+    }
+    caps
+}
+
+fn cap_name_matches(requested: &str, advertised: &str) -> bool {
+    let req = requested.split('=').next().unwrap_or(requested);
+    let adv = advertised.split('=').next().unwrap_or(advertised);
+    req.eq_ignore_ascii_case(adv)
+}
+
+fn has_cap(enabled: &HashSet<String>, name: &str) -> bool {
+    enabled
+        .iter()
+        .any(|c| c.split('=').next().unwrap_or(c).eq_ignore_ascii_case(name))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SaslState {
+    Idle,
+    AwaitPlain,
+}
 
 pub async fn handle_client<R, W>(
     reader: R,
@@ -74,6 +101,10 @@ where
     let mut enabled_caps: HashSet<String> = HashSet::new();
     let mut line_buf = String::new();
     let mut channels: HashSet<String> = HashSet::new();
+    let mut account: Option<String> = None;
+    let mut sasl_state = SaslState::Idle;
+    let has_accounts = !cfg.accounts.is_empty();
+    let cap_list = advertised_caps(has_accounts);
 
     loop {
         tokio::select! {
@@ -114,6 +145,7 @@ where
                         nick.as_deref(),
                         &mut cap_negotiating,
                         &mut enabled_caps,
+                        &cap_list,
                     ).await?;
                     if msg.params.first().map(|s| s.eq_ignore_ascii_case("END")).unwrap_or(false) {
                         try_register(
@@ -127,6 +159,22 @@ where
                             cap_negotiating,
                         ).await?;
                     }
+                    continue;
+                }
+
+                if msg.command_eq("AUTHENTICATE") {
+                    handle_authenticate(
+                        &mut writer,
+                        server_name,
+                        &msg,
+                        nick.as_deref(),
+                        user.as_deref(),
+                        &cfg.accounts,
+                        &enabled_caps,
+                        &mut sasl_state,
+                        &mut account,
+                    )
+                    .await?;
                     continue;
                 }
 
@@ -432,7 +480,7 @@ where
                             ).await?;
                             continue;
                         }
-                        let line = if let Some(store) = hist {
+                        let mut line = if let Some(store) = hist {
                             match store.append(target, &prefix, text) {
                                 Ok(h) => h.tagged_privmsg(),
                                 Err(_) => format!(":{prefix} PRIVMSG {target} :{text}\r\n"),
@@ -440,6 +488,9 @@ where
                         } else {
                             format!(":{prefix} PRIVMSG {target} :{text}\r\n")
                         };
+                        if let Some(acc) = account.as_deref() {
+                            line = prepend_tag(&line, "account", acc);
+                        }
                         let _ = shared.lock().await.bus.send(BusMsg {
                             target: target.clone(),
                             line,
@@ -722,6 +773,7 @@ async fn handle_cap<W>(
     nick: Option<&str>,
     cap_negotiating: &mut bool,
     enabled_caps: &mut HashSet<String>,
+    advertised: &[String],
 ) -> Result<()>
 where
     W: AsyncWriteExt + Unpin,
@@ -730,7 +782,7 @@ where
     let sub = msg.params.first().map(String::as_str).unwrap_or("");
     if sub.eq_ignore_ascii_case("LS") {
         *cap_negotiating = true;
-        let list = SUPPORTED_CAPS.join(" ");
+        let list = advertised.join(" ");
         writer
             .write_all(format!(":{server_name} CAP {nick_s} LS :{list}\r\n").as_bytes())
             .await?;
@@ -756,14 +808,16 @@ where
         for tok in tokens {
             let disable = tok.starts_with('-');
             let name = tok.trim_start_matches('-');
-            if !SUPPORTED_CAPS.iter().any(|c| *c == name) {
+            let known = advertised.iter().any(|c| cap_name_matches(name, c));
+            if !known {
                 nak.push(tok.to_string());
                 continue;
             }
+            let canon = name.split('=').next().unwrap_or(name).to_string();
             if disable {
-                enabled_caps.remove(name);
+                enabled_caps.retain(|c| !cap_name_matches(c, &canon));
             } else {
-                enabled_caps.insert(name.to_string());
+                enabled_caps.insert(canon);
             }
             ack.push(tok.to_string());
         }
@@ -801,18 +855,161 @@ where
     Ok(())
 }
 
+async fn handle_authenticate<W>(
+    writer: &mut W,
+    server_name: &str,
+    msg: &RawLine,
+    nick: Option<&str>,
+    user: Option<&str>,
+    accounts: &[crate::config::AccountSection],
+    enabled_caps: &HashSet<String>,
+    sasl_state: &mut SaslState,
+    account: &mut Option<String>,
+) -> Result<()>
+where
+    W: AsyncWriteExt + Unpin,
+{
+    use base64::Engine;
+
+    let nick_s = nick.unwrap_or("*");
+    if !has_cap(enabled_caps, "sasl") {
+        writer
+            .write_all(
+                numeric(
+                    server_name,
+                    904,
+                    nick_s,
+                    &["SASL authentication failed"],
+                )
+                .as_bytes(),
+            )
+            .await?;
+        return Ok(());
+    }
+    let param = msg.params.first().map(String::as_str).unwrap_or("");
+    match *sasl_state {
+        SaslState::Idle => {
+            if param.eq_ignore_ascii_case("PLAIN") {
+                *sasl_state = SaslState::AwaitPlain;
+                writer
+                    .write_all(b"AUTHENTICATE +\r\n")
+                    .await?;
+            } else if param == "*" {
+                *sasl_state = SaslState::Idle;
+                writer
+                    .write_all(
+                        numeric(server_name, 906, nick_s, &["SASL authentication aborted"])
+                            .as_bytes(),
+                    )
+                    .await?;
+            } else {
+                writer
+                    .write_all(
+                        numeric(
+                            server_name,
+                            908,
+                            nick_s,
+                            &["PLAIN", "are the available SASL mechanisms"],
+                        )
+                        .as_bytes(),
+                    )
+                    .await?;
+            }
+        }
+        SaslState::AwaitPlain => {
+            *sasl_state = SaslState::Idle;
+            if param == "*" {
+                writer
+                    .write_all(
+                        numeric(server_name, 906, nick_s, &["SASL authentication aborted"])
+                            .as_bytes(),
+                    )
+                    .await?;
+                return Ok(());
+            }
+            let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(param) else {
+                writer
+                    .write_all(
+                        numeric(server_name, 904, nick_s, &["SASL authentication failed"])
+                            .as_bytes(),
+                    )
+                    .await?;
+                return Ok(());
+            };
+            // PLAIN: [authzid] \0 authcid \0 password
+            let parts: Vec<&[u8]> = bytes.split(|&b| b == 0).collect();
+            if parts.len() != 3 {
+                writer
+                    .write_all(
+                        numeric(server_name, 904, nick_s, &["SASL authentication failed"])
+                            .as_bytes(),
+                    )
+                    .await?;
+                return Ok(());
+            }
+            let authcid = String::from_utf8_lossy(parts[1]);
+            let password = String::from_utf8_lossy(parts[2]);
+            let matched = accounts.iter().find(|a| {
+                a.name.eq_ignore_ascii_case(authcid.as_ref()) && a.password == password.as_ref()
+            });
+            let Some(acc) = matched else {
+                writer
+                    .write_all(
+                        numeric(server_name, 904, nick_s, &["SASL authentication failed"])
+                            .as_bytes(),
+                    )
+                    .await?;
+                return Ok(());
+            };
+            *account = Some(acc.name.clone());
+            let user_s = user.unwrap_or("user");
+            let host = "dsc.local";
+            let full = format!("{nick_s}!{user_s}@{host}");
+            writer
+                .write_all(
+                    numeric(
+                        server_name,
+                        900,
+                        nick_s,
+                        &[full.as_str(), acc.name.as_str(), &format!("You are now logged in as {}", acc.name)],
+                    )
+                    .as_bytes(),
+                )
+                .await?;
+            writer
+                .write_all(
+                    numeric(server_name, 903, nick_s, &["SASL authentication successful"])
+                        .as_bytes(),
+                )
+                .await?;
+            info!(account = %acc.name, nick = %nick_s, "SASL PLAIN success");
+        }
+    }
+    Ok(())
+}
+
+fn prepend_tag(line: &str, key: &str, value: &str) -> String {
+    let line = line.trim_end_matches(['\r', '\n']);
+    if let Some(rest) = line.strip_prefix('@') {
+        format!("@{key}={value};{rest}\r\n")
+    } else {
+        format!("@{key}={value} {line}\r\n")
+    }
+}
+
 /// Adapt a (possibly tagged) bus line to the client's negotiated caps.
 fn adapt_bus_line(line: &str, caps: &HashSet<String>) -> String {
     let (tags, rest) = split_tags(line);
     let Some(tags) = tags else {
-        if caps.contains("server-time") {
+        if has_cap(caps, "server-time") {
             return tag_server_time(line);
         }
         return ensure_crlf(line);
     };
-    let want_msg = caps.contains("message-tags");
-    let want_time = caps.contains("server-time");
-    if !want_msg && !want_time {
+    let want_msg = has_cap(caps, "message-tags");
+    let want_time = has_cap(caps, "server-time");
+    let want_account = has_cap(caps, "account-tag");
+    if !want_msg && !want_time && !want_account {
         return ensure_crlf(rest);
     }
     let mut keep = Vec::new();
@@ -824,7 +1021,13 @@ fn adapt_bus_line(line: &str, caps: &HashSet<String>) -> String {
             keep.push(part);
         } else if part.starts_with("time=") && (want_time || want_msg) {
             keep.push(part);
-        } else if want_msg && !part.starts_with("msgid=") && !part.starts_with("time=") {
+        } else if part.starts_with("account=") && (want_account || want_msg) {
+            keep.push(part);
+        } else if want_msg
+            && !part.starts_with("msgid=")
+            && !part.starts_with("time=")
+            && !part.starts_with("account=")
+        {
             keep.push(part);
         }
     }
