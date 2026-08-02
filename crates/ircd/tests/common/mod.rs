@@ -90,7 +90,7 @@ where
     let (sr, sw) = tokio::io::split(server_end);
     let (cr, cw) = tokio::io::split(client_end);
     let reader = BufReader::new(cr);
-    let server = handle_client(sr, sw, peer(port), Arc::clone(&shared));
+    let server = handle_client(sr, sw, peer(port), Arc::clone(&shared), false, false);
     let client_fut = client(cw, reader);
     let (server_res, out) = tokio::join!(server, client_fut);
     let _ = server_res;
@@ -120,8 +120,8 @@ where
     let (s2r, s2w) = tokio::io::split(s2);
     let (c1r, c1w) = tokio::io::split(c1);
     let (c2r, c2w) = tokio::io::split(c2);
-    let srv1 = handle_client(s1r, s1w, peer(1), Arc::clone(&shared));
-    let srv2 = handle_client(s2r, s2w, peer(2), Arc::clone(&shared));
+    let srv1 = handle_client(s1r, s1w, peer(1), Arc::clone(&shared), false, false);
+    let srv2 = handle_client(s2r, s2w, peer(2), Arc::clone(&shared), false, false);
     let client_fut = client((c1w, BufReader::new(c1r)), (c2w, BufReader::new(c2r)));
     let (r1, r2, out) = tokio::join!(srv1, srv2, client_fut);
     let _ = (r1, r2);
@@ -136,4 +136,29 @@ pub fn shared_with_history(path: std::path::PathBuf) -> Arc<Mutex<Shared>> {
 
 pub fn shared_plain() -> Arc<Mutex<Shared>> {
     Arc::new(Mutex::new(Shared::new(Arc::new(base_cfg(None)), None)))
+}
+
+
+/// Like [`with_client`] but marks the session as TLS-secured (auth allowed under require_tls_for_auth).
+pub async fn with_client_secure<F, Fut>(
+    shared: Arc<Mutex<Shared>>,
+    port: u16,
+    client: F,
+) -> Fut::Output
+where
+    F: FnOnce(
+        tokio::io::WriteHalf<DuplexStream>,
+        BufReader<tokio::io::ReadHalf<DuplexStream>>,
+    ) -> Fut,
+    Fut: std::future::Future,
+{
+    let (client_end, server_end) = tokio::io::duplex(64 * 1024);
+    let (sr, sw) = tokio::io::split(server_end);
+    let (cr, cw) = tokio::io::split(client_end);
+    let reader = BufReader::new(cr);
+    let server = handle_client(sr, sw, peer(port), Arc::clone(&shared), true, false);
+    let client_fut = client(cw, reader);
+    let (server_res, out) = tokio::join!(server, client_fut);
+    let _ = server_res;
+    out
 }

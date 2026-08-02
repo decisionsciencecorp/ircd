@@ -20,6 +20,8 @@ pub struct Config {
     pub accounts: Vec<AccountSection>,
     #[serde(default)]
     pub limits: LimitsSection,
+    #[serde(default)]
+    pub security: SecuritySection,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -68,6 +70,59 @@ impl Default for LimitsSection {
             flood_window_secs: default_flood_window(),
             max_line_bytes: default_max_line_bytes(),
         }
+    }
+}
+
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SecuritySection {
+    /// Production posture: forbid plaintext listens; force TLS for SASL/OPER.
+    #[serde(default)]
+    pub production: bool,
+    /// Refuse AUTHENTICATE/OPER on non-TLS connections (implied by `production`).
+    #[serde(default)]
+    pub require_tls_for_auth: bool,
+    /// Disconnect if registration (NICK+USER) not completed in time. 0 = disabled.
+    #[serde(default = "default_registration_timeout")]
+    pub registration_timeout_secs: u64,
+    /// Disconnect idle registered clients. 0 = disabled (lab default).
+    #[serde(default)]
+    pub idle_timeout_secs: u64,
+    /// TLS/WS handshake deadline before the session is admitted to protocol.
+    #[serde(default = "default_handshake_timeout")]
+    pub handshake_timeout_secs: u64,
+    /// Cap concurrent TLS/WS handshakes (and optionally plaintext admits).
+    #[serde(default = "default_max_handshake")]
+    pub max_handshake_inflight: usize,
+}
+
+fn default_registration_timeout() -> u64 {
+    60
+}
+fn default_handshake_timeout() -> u64 {
+    15
+}
+fn default_max_handshake() -> usize {
+    64
+}
+
+impl Default for SecuritySection {
+    fn default() -> Self {
+        Self {
+            production: false,
+            require_tls_for_auth: false,
+            registration_timeout_secs: default_registration_timeout(),
+            idle_timeout_secs: 0,
+            handshake_timeout_secs: default_handshake_timeout(),
+            max_handshake_inflight: default_max_handshake(),
+        }
+    }
+}
+
+impl SecuritySection {
+    /// Whether SASL/OPER must ride a TLS (or WSS) connection.
+    pub fn tls_required_for_auth(&self) -> bool {
+        self.production || self.require_tls_for_auth
     }
 }
 
@@ -183,6 +238,7 @@ impl Default for Config {
             history: HistorySection::default(),
             accounts: Vec::new(),
             limits: LimitsSection::default(),
+            security: SecuritySection::default(),
         }
     }
 }
@@ -211,6 +267,17 @@ impl Config {
             if l.tls && (l.cert.is_none() || l.key.is_none()) {
                 bail!("listen[{i}] tls=true requires cert and key");
             }
+        }
+        if self.security.production {
+            if self.listen.is_empty() {
+                bail!("security.production requires at least one TLS listen");
+            }
+            if self.listen.iter().any(|l| !l.tls) {
+                bail!("security.production forbids plaintext listen blocks");
+            }
+        }
+        if self.security.max_handshake_inflight == 0 {
+            bail!("security.max_handshake_inflight must be >= 1");
         }
         Ok(())
     }
@@ -283,5 +350,60 @@ enabled = false
         .unwrap();
         let c = Config::load_file(f.path()).unwrap();
         assert_eq!(c.server.name, "ok.test");
+    }
+
+    #[test]
+    fn production_forbids_plaintext() {
+        let mut c = Config::default();
+        c.security.production = true;
+        c.listen = vec![ListenSection {
+            bind: "127.0.0.1:6667".into(),
+            tls: false,
+            websocket: false,
+            cert: None,
+            key: None,
+        }];
+        assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn production_ok_with_tls_listen() {
+        let mut c = Config::default();
+        c.security.production = true;
+        c.listen = vec![ListenSection {
+            bind: "127.0.0.1:6697".into(),
+            tls: true,
+            websocket: false,
+            cert: Some(PathBuf::from("c.pem")),
+            key: Some(PathBuf::from("k.pem")),
+        }];
+        c.validate().unwrap();
+        assert!(c.security.tls_required_for_auth());
+    }
+
+    #[test]
+    fn production_empty_listen_fails() {
+        let mut c = Config::default();
+        c.security.production = true;
+        c.listen.clear();
+        assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn max_handshake_zero_fails() {
+        let mut c = Config::default();
+        c.security.max_handshake_inflight = 0;
+        assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn tls_required_for_auth_flag() {
+        let mut s = SecuritySection::default();
+        assert!(!s.tls_required_for_auth());
+        s.require_tls_for_auth = true;
+        assert!(s.tls_required_for_auth());
+        s.require_tls_for_auth = false;
+        s.production = true;
+        assert!(s.tls_required_for_auth());
     }
 }

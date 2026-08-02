@@ -2,6 +2,7 @@
 //!
 //! The `ircd` binary is a thin CLI wrapper around this crate.
 
+pub mod admission;
 pub mod config;
 pub mod history;
 pub mod session;

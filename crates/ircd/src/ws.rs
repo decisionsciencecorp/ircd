@@ -15,7 +15,7 @@ use crate::session;
 use crate::state::Shared;
 
 /// Run IRC session over an already-accepted WebSocket (plain or after TLS).
-pub async fn handle_websocket<S>(stream: S, peer: SocketAddr, shared: Arc<Mutex<Shared>>) -> Result<()>
+pub async fn handle_websocket<S>(stream: S, peer: SocketAddr, shared: Arc<Mutex<Shared>>, secure: bool) -> Result<()>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
@@ -93,7 +93,7 @@ where
     });
 
     let (reader, writer) = tokio::io::split(server);
-    let result = session::handle_client(reader, writer, peer, shared).await;
+    let result = session::handle_client(reader, writer, peer, shared, secure, false).await;
     inbound.abort();
     outbound.abort();
     result
@@ -104,7 +104,7 @@ pub async fn accept_plain_ws(listener: tokio::net::TcpListener, shared: Arc<Mute
         let (socket, peer) = listener.accept().await?;
         let shared = Arc::clone(&shared);
         tokio::spawn(async move {
-            if let Err(e) = handle_websocket(socket, peer, shared).await {
+            if let Err(e) = handle_websocket(socket, peer, shared, false).await {
                 warn!(%peer, error = %e, "websocket client session ended");
             }
         });
@@ -123,7 +123,7 @@ pub async fn accept_tls_ws(
         tokio::spawn(async move {
             match acceptor.accept(socket).await {
                 Ok(tls) => {
-                    if let Err(e) = handle_websocket(tls, peer, shared).await {
+                    if let Err(e) = handle_websocket(tls, peer, shared, true).await {
                         warn!(%peer, error = %e, "wss client session ended");
                     }
                 }

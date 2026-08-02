@@ -77,6 +77,8 @@ pub async fn handle_client<R, W>(
     mut writer: W,
     peer: SocketAddr,
     shared: Arc<Mutex<Shared>>,
+    secure: bool,
+    pre_admitted: bool,
 ) -> Result<()>
 where
     R: tokio::io::AsyncRead + Unpin,
@@ -84,13 +86,15 @@ where
 {
     let (conn_id, cfg) = {
         let mut g = shared.lock().await;
-        if let Err(reason) = g.try_admit(peer) {
-            drop(g);
-            let _ = writer
-                .write_all(format!("ERROR :Closing Link: [{peer}] ({reason})\r\n").as_bytes())
-                .await;
-            info!(%peer, %reason, "connection rejected");
-            return Ok(());
+        if !pre_admitted {
+            if let Err(reason) = g.try_admit(peer) {
+                drop(g);
+                let _ = writer
+                    .write_all(format!("ERROR :Closing Link: [{peer}] ({reason})\r\n").as_bytes())
+                    .await;
+                info!(%peer, %reason, "connection rejected");
+                return Ok(());
+            }
         }
         let id = g.next_id;
         g.next_id += 1;
@@ -107,6 +111,10 @@ where
     let flood_window = Duration::from_secs(cfg.limits.flood_window_secs.max(1));
     let mut flood_count = 0u32;
     let mut flood_window_start = Instant::now();
+    let session_start = Instant::now();
+    let mut last_activity = Instant::now();
+    let reg_deadline = crate::admission::registration_deadline(&cfg);
+    let idle_deadline = crate::admission::idle_deadline(&cfg);
 
     // Byte-at-a-time line assembly (cancellation-safe across read timeouts).
     let mut bus_rx = shared.lock().await.bus.subscribe();
@@ -182,7 +190,28 @@ where
                 break;
             }
             Ok(Err(e)) => return Err(e.into()),
-            Err(_) => continue, // timed out — keep partial line_buf, drain bus
+            Err(_) => {
+                if !registered {
+                    if let Some(limit) = reg_deadline {
+                        if session_start.elapsed() >= limit {
+                            let _ = writer
+                                .write_all(b"ERROR :Closing Link: Registration timeout
+")
+                                .await;
+                            break;
+                        }
+                    }
+                } else if let Some(limit) = idle_deadline {
+                    if last_activity.elapsed() >= limit {
+                        let _ = writer
+                            .write_all(b"ERROR :Closing Link: Idle timeout
+")
+                            .await;
+                        break;
+                    }
+                }
+                continue; // timed out — keep partial line_buf, drain bus
+            }
         };
         if line_buf.len() >= max_line {
             let _ = writer
@@ -215,6 +244,7 @@ where
             info!(%peer, "excess flood; closing");
             break;
         }
+        last_activity = Instant::now();
         let Some(msg) = RawLine::parse(&raw) else {
             continue;
         };
@@ -245,6 +275,20 @@ where
                 }
 
                 if msg.command_eq("AUTHENTICATE") {
+                    if !secure && cfg.security.tls_required_for_auth() {
+                        writer
+                            .write_all(
+                                numeric(
+                                    server_name,
+                                    904,
+                                    nick.as_deref().unwrap_or("*"),
+                                    &["TLS required for authentication"],
+                                )
+                                .as_bytes(),
+                            )
+                            .await?;
+                        continue;
+                    }
                     handle_authenticate(
                         &mut writer,
                         server_name,
@@ -398,6 +442,12 @@ where
                 }
 
                 if msg.command_eq("OPER") {
+                    if !secure && cfg.security.tls_required_for_auth() {
+                        writer.write_all(
+                            numeric(server_name, 464, nick_s, &["TLS required for authentication"]).as_bytes(),
+                        ).await?;
+                        continue;
+                    }
                     let (Some(name), Some(pass)) = (msg.params.first(), msg.params.get(1)) else {
                         writer.write_all(
                             numeric(server_name, 461, nick_s, &["OPER", "Not enough parameters"]).as_bytes(),

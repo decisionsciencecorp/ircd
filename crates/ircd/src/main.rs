@@ -8,6 +8,7 @@ use ircd::config::{self, Config};
 use ircd::history::HistoryStore;
 use ircd::session;
 use ircd::state::Shared;
+use ircd::admission;
 use ircd::tls;
 use ircd::ws;
 use ircd::VERSION;
@@ -208,6 +209,7 @@ async fn main() -> Result<()> {
     };
 
     let shared = Arc::new(Mutex::new(Shared::new(Arc::clone(&cfg), history)));
+    let handshake_sem = admission::handshake_semaphore(&cfg);
     let mut joins = tokio::task::JoinSet::new();
 
     info!(
@@ -225,14 +227,16 @@ async fn main() -> Result<()> {
         match (listen.websocket, listen.tls) {
             (false, false) => {
                 info!("plaintext IRC on {addr}");
-                joins.spawn(async move { accept_plaintext(listener, shared).await });
+                let handshake_sem = Arc::clone(&handshake_sem);
+                joins.spawn(async move { accept_plaintext(listener, shared, handshake_sem).await });
             }
             (false, true) => {
                 let cert = listen.cert.clone().context("tls cert")?;
                 let key = listen.key.clone().context("tls key")?;
                 let acceptor = tls::load_acceptor(&cert, &key)?;
                 info!("TLS IRC on {addr} (cert {})", cert.display());
-                joins.spawn(async move { accept_tls(listener, acceptor, shared).await });
+                let handshake_sem = Arc::clone(&handshake_sem);
+                joins.spawn(async move { accept_tls(listener, acceptor, shared, handshake_sem).await });
             }
             (true, false) => {
                 info!("WebSocket IRC on {addr}");
@@ -258,13 +262,29 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-async fn accept_plaintext(listener: TcpListener, shared: Arc<Mutex<Shared>>) -> Result<()> {
+async fn accept_plaintext(
+    listener: TcpListener,
+    shared: Arc<Mutex<Shared>>,
+    handshake_sem: Arc<tokio::sync::Semaphore>,
+) -> Result<()> {
     loop {
         let (socket, peer) = listener.accept().await?;
+        let Ok(permit) = handshake_sem.clone().try_acquire_owned() else {
+            warn!(%peer, "handshake capacity full; dropping plaintext connect");
+            continue;
+        };
         let shared = Arc::clone(&shared);
+        if let Err(reason) = admission::admit_early(&shared, peer).await {
+            warn!(%peer, %reason, "plaintext pre-admit rejected");
+            drop(permit);
+            continue;
+        }
         tokio::spawn(async move {
+            let _permit = permit;
             let (reader, writer) = socket.into_split();
-            if let Err(e) = session::handle_client(reader, writer, peer, shared).await {
+            if let Err(e) =
+                session::handle_client(reader, writer, peer, shared, false, true).await
+            {
                 warn!(%peer, error = %e, "plaintext client session ended");
             }
         });
@@ -275,20 +295,45 @@ async fn accept_tls(
     listener: TcpListener,
     acceptor: tokio_rustls::TlsAcceptor,
     shared: Arc<Mutex<Shared>>,
+    handshake_sem: Arc<tokio::sync::Semaphore>,
 ) -> Result<()> {
     loop {
         let (socket, peer) = listener.accept().await?;
+        let Ok(permit) = handshake_sem.clone().try_acquire_owned() else {
+            warn!(%peer, "handshake capacity full; dropping TLS connect");
+            continue;
+        };
         let shared = Arc::clone(&shared);
         let acceptor = acceptor.clone();
+        // Admit *before* costly handshake (H-09).
+        if let Err(reason) = admission::admit_early(&shared, peer).await {
+            warn!(%peer, %reason, "tls pre-admit rejected");
+            drop(permit);
+            continue;
+        }
+        let hs_timeout = {
+            let g = shared.lock().await;
+            admission::handshake_timeout(&g.config)
+        };
         tokio::spawn(async move {
-            match acceptor.accept(socket).await {
-                Ok(tls_stream) => {
+            let _permit = permit;
+            match tokio::time::timeout(hs_timeout, acceptor.accept(socket)).await {
+                Ok(Ok(tls_stream)) => {
                     let (reader, writer) = tokio::io::split(tls_stream);
-                    if let Err(e) = session::handle_client(reader, writer, peer, shared).await {
+                    if let Err(e) =
+                        session::handle_client(reader, writer, peer, shared, true, true).await
+                    {
                         warn!(%peer, error = %e, "tls client session ended");
                     }
                 }
-                Err(e) => warn!(%peer, error = %e, "tls handshake failed"),
+                Ok(Err(e)) => {
+                    shared.lock().await.release(peer);
+                    warn!(%peer, error = %e, "tls handshake failed");
+                }
+                Err(_) => {
+                    shared.lock().await.release(peer);
+                    warn!(%peer, "tls handshake timed out");
+                }
             }
         });
     }
