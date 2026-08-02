@@ -27,6 +27,7 @@ pub fn base_cfg(hist: Option<std::path::PathBuf>) -> Config {
         enabled: hist.is_some(),
         path: hist.unwrap_or_else(|| "./unused.sqlite3".into()),
         max_per_channel: 100,
+        max_total_rows: 0,
         auto_replay_on_join: 20,
     };
     c.limits = LimitsSection {

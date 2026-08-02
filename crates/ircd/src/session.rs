@@ -316,21 +316,33 @@ where
                         continue;
                     }
                     let old_nick = nick.clone();
-                    {
+                    let nick_taken = {
                         let mut g = shared.lock().await;
                         if let Some(other) = g.nicks.get(&desired) {
                             if *other != conn_id {
-                                writer.write_all(
-                                    numeric(server_name, 433, nick.as_deref().unwrap_or("*"), &[desired.as_str(), "Nickname is already in use"]).as_bytes(),
-                                ).await?;
-                                continue;
+                                true
+                            } else {
+                                if let Some(ref old) = old_nick {
+                                    g.nicks.remove(old);
+                                }
+                                g.nicks.insert(desired.clone(), conn_id);
+                                g.id_to_nick.insert(conn_id, desired.clone());
+                                false
                             }
+                        } else {
+                            if let Some(ref old) = old_nick {
+                                g.nicks.remove(old);
+                            }
+                            g.nicks.insert(desired.clone(), conn_id);
+                            g.id_to_nick.insert(conn_id, desired.clone());
+                            false
                         }
-                        if let Some(ref old) = old_nick {
-                            g.nicks.remove(old);
-                        }
-                        g.nicks.insert(desired.clone(), conn_id);
-                        g.id_to_nick.insert(conn_id, desired.clone());
+                    };
+                    if nick_taken {
+                        writer.write_all(
+                            numeric(server_name, 433, nick.as_deref().unwrap_or("*"), &[desired.as_str(), "Nickname is already in use"]).as_bytes(),
+                        ).await?;
+                        continue;
                     }
                     nick = Some(desired.clone());
                     if let Some(old) = old_nick {
@@ -545,7 +557,7 @@ where
                         };
                         if let (Some(store), lim) = (hist, limit) {
                             if lim > 0 {
-                                if let Ok(rows) = store.latest(chan, lim) {
+                                if let Ok(rows) = store.latest_async(chan.to_string(), lim).await {
                                     for h in rows {
                                         let line = adapt_bus_line(&h.tagged_privmsg(), &enabled_caps);
                                         writer.write_all(line.as_bytes()).await?;
@@ -606,7 +618,10 @@ where
                         .await?;
                         continue;
                     };
-                    let rows = store.latest(target, limit).unwrap_or_default();
+                    let rows = store
+                        .latest_async(target.to_string(), limit)
+                        .await
+                        .unwrap_or_default();
                     // BATCH / chathistory CAP not advertised until Protocol P2 (#2227).
                     for h in rows {
                         let line = adapt_bus_line(&h.tagged_privmsg(), &enabled_caps);
@@ -637,7 +652,10 @@ where
                             continue;
                         }
                         let mut line = if let Some(store) = hist {
-                            match store.append(target, &prefix, text) {
+                            match store
+                                .append_async(target.clone(), prefix.clone(), text.clone())
+                                .await
+                            {
                                 Ok(h) => h.tagged_privmsg(),
                                 Err(_) => format!(":{prefix} PRIVMSG {target} :{text}\r\n"),
                             }
@@ -782,10 +800,12 @@ where
                         }
                     };
                     if !allowed {
-                        let g = shared.lock().await;
-                        let on_chan = target_id
-                            .and_then(|tid| g.channels.get(chan.as_str()).map(|c| c.members.contains(&tid)))
-                            .unwrap_or(false);
+                        let on_chan = {
+                            let g = shared.lock().await;
+                            target_id
+                                .and_then(|tid| g.channels.get(chan.as_str()).map(|c| c.members.contains(&tid)))
+                                .unwrap_or(false)
+                        };
                         if !on_chan {
                             writer.write_all(
                                 numeric(server_name, 441, nick_s, &[target_nick.as_str(), chan.as_str(), "They aren't on that channel"]).as_bytes(),

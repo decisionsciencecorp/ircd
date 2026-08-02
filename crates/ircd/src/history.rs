@@ -1,7 +1,10 @@
 //! Single-node channel history (sqlite) + CHATHISTORY helpers.
+//!
+//! Sync rusqlite work runs under [`tokio::task::spawn_blocking`] via the
+//! `*_async` methods so Tokio worker threads are not stalled (H-06).
 
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
 use ircd_core::tags::unix_ms_to_rfc3339;
@@ -37,17 +40,28 @@ impl HistMsg {
 pub struct HistoryStore {
     db: Mutex<Connection>,
     max_per_channel: usize,
+    max_total_rows: usize,
 }
 
 impl HistoryStore {
     pub fn open(path: &Path, max_per_channel: usize) -> Result<Self> {
+        Self::open_with_retention(path, max_per_channel, 0)
+    }
+
+    pub fn open_with_retention(
+        path: &Path,
+        max_per_channel: usize,
+        max_total_rows: usize,
+    ) -> Result<Self> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("mkdir {}", parent.display()))?;
         }
         let db = Connection::open(path).with_context(|| format!("open {}", path.display()))?;
         db.execute_batch(
-            "CREATE TABLE IF NOT EXISTS channel_history (
+            "PRAGMA journal_mode=WAL;
+             PRAGMA synchronous=NORMAL;
+             CREATE TABLE IF NOT EXISTS channel_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 channel TEXT NOT NULL,
                 ts_ms INTEGER NOT NULL,
@@ -59,6 +73,7 @@ impl HistoryStore {
         Ok(Self {
             db: Mutex::new(db),
             max_per_channel: max_per_channel.max(1),
+            max_total_rows,
         })
     }
 
@@ -73,13 +88,21 @@ impl HistoryStore {
             params![channel, ts_ms, prefix, text],
         )?;
         let id = db.last_insert_rowid();
-        // prune
+        // Per-channel prune
         db.execute(
             "DELETE FROM channel_history WHERE channel = ?1 AND id NOT IN (
                 SELECT id FROM channel_history WHERE channel = ?1 ORDER BY id DESC LIMIT ?2
              )",
             params![channel, self.max_per_channel as i64],
         )?;
+        if self.max_total_rows > 0 {
+            db.execute(
+                "DELETE FROM channel_history WHERE id NOT IN (
+                    SELECT id FROM channel_history ORDER BY id DESC LIMIT ?1
+                 )",
+                params![self.max_total_rows as i64],
+            )?;
+        }
         Ok(HistMsg {
             id,
             channel: channel.to_string(),
@@ -112,6 +135,31 @@ impl HistoryStore {
         out.reverse(); // chronological
         Ok(out)
     }
+
+    /// Append on a blocking pool thread (safe from async contexts).
+    pub async fn append_async(
+        self: &Arc<Self>,
+        channel: String,
+        prefix: String,
+        text: String,
+    ) -> Result<HistMsg> {
+        let store = Arc::clone(self);
+        tokio::task::spawn_blocking(move || store.append(&channel, &prefix, &text))
+            .await
+            .context("history append join")?
+    }
+
+    /// Latest on a blocking pool thread (safe from async contexts).
+    pub async fn latest_async(
+        self: &Arc<Self>,
+        channel: String,
+        limit: usize,
+    ) -> Result<Vec<HistMsg>> {
+        let store = Arc::clone(self);
+        tokio::task::spawn_blocking(move || store.latest(&channel, limit))
+            .await
+            .context("history latest join")?
+    }
 }
 
 #[cfg(test)]
@@ -137,5 +185,35 @@ mod tests {
         let tagged = rows[0].tagged_privmsg();
         assert!(tagged.contains("PRIVMSG #lab"));
         assert!(tagged.starts_with("@msgid="));
+    }
+
+    #[test]
+    fn global_retention_prunes_across_channels() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("g.sqlite3");
+        let store = HistoryStore::open_with_retention(&path, 100, 4).unwrap();
+        for i in 0..3 {
+            store.append("#a", "p", &format!("a{i}")).unwrap();
+        }
+        for i in 0..3 {
+            store.append("#b", "p", &format!("b{i}")).unwrap();
+        }
+        let a = store.latest("#a", 50).unwrap();
+        let b = store.latest("#b", 50).unwrap();
+        assert!(a.len() + b.len() <= 4, "a={a:?} b={b:?}");
+    }
+
+    #[tokio::test]
+    async fn append_async_roundtrip() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("async.sqlite3");
+        let store = Arc::new(HistoryStore::open(&path, 10).unwrap());
+        let h = store
+            .append_async("#c".into(), "n!u@h".into(), "hi".into())
+            .await
+            .unwrap();
+        assert_eq!(h.text, "hi");
+        let rows = store.latest_async("#c".into(), 10).await.unwrap();
+        assert_eq!(rows.len(), 1);
     }
 }

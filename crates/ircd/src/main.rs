@@ -194,7 +194,7 @@ async fn main() -> Result<()> {
     let cfg = Arc::new(merge_config(base, &cli)?);
 
     let history = if cfg.history.enabled {
-        match HistoryStore::open(&cfg.history.path, cfg.history.max_per_channel) {
+        match HistoryStore::open_with_retention(&cfg.history.path, cfg.history.max_per_channel, cfg.history.max_total_rows) {
             Ok(h) => {
                 info!("history sqlite {}", cfg.history.path.display());
                 Some(Arc::new(h))

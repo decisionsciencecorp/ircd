@@ -5,6 +5,7 @@
 pub mod admission;
 pub mod config;
 pub mod history;
+pub mod lock_discipline;
 pub mod session;
 pub mod state;
 pub mod tls;

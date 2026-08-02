@@ -176,6 +176,9 @@ pub struct HistorySection {
     pub path: PathBuf,
     #[serde(default = "default_hist_max")]
     pub max_per_channel: usize,
+    /// Global retention across all channels (0 = disabled).
+    #[serde(default)]
+    pub max_total_rows: usize,
     #[serde(default = "default_hist_replay")]
     pub auto_replay_on_join: usize,
 }
@@ -199,6 +202,7 @@ impl Default for HistorySection {
             enabled: true,
             path: default_history_path(),
             max_per_channel: default_hist_max(),
+            max_total_rows: 0,
             auto_replay_on_join: default_hist_replay(),
         }
     }
