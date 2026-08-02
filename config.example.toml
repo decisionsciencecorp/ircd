@@ -41,3 +41,10 @@ tls = false
 enabled = true
 name = "admin"
 password = "change-me"
+
+# Channel history (sqlite) — JOIN auto-replay + CHATHISTORY LATEST
+[history]
+enabled = true
+path = "./data/history.sqlite3"
+max_per_channel = 1000
+auto_replay_on_join = 50

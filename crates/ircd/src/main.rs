@@ -4,6 +4,7 @@
 //! Feature growth tracks UnrealIRCd as the ops/reference model (clean-room).
 
 mod config;
+mod history;
 mod session;
 mod tls;
 mod ws;
@@ -18,6 +19,7 @@ use tokio::sync::{broadcast, Mutex};
 use tracing::{info, warn};
 
 use config::Config;
+use history::HistoryStore;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -105,10 +107,11 @@ pub(crate) struct Shared {
     pub channels: HashMap<String, ChannelState>,
     pub bus: broadcast::Sender<BusMsg>,
     pub config: Arc<Config>,
+    pub history: Option<Arc<HistoryStore>>,
 }
 
 impl Shared {
-    fn new(config: Arc<Config>) -> Self {
+    fn new(config: Arc<Config>, history: Option<Arc<HistoryStore>>) -> Self {
         let (bus, _) = broadcast::channel(256);
         Self {
             next_id: 1,
@@ -116,6 +119,7 @@ impl Shared {
             channels: HashMap::new(),
             bus,
             config,
+            history,
         }
     }
 }
@@ -298,7 +302,22 @@ async fn main() -> Result<()> {
     };
     let cfg = Arc::new(merge_config(base, &cli)?);
 
-    let shared = Arc::new(Mutex::new(Shared::new(Arc::clone(&cfg))));
+    let history = if cfg.history.enabled {
+        match HistoryStore::open(&cfg.history.path, cfg.history.max_per_channel) {
+            Ok(h) => {
+                info!("history sqlite {}", cfg.history.path.display());
+                Some(Arc::new(h))
+            }
+            Err(e) => {
+                warn!("history disabled; open failed: {e:#}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    let shared = Arc::new(Mutex::new(Shared::new(Arc::clone(&cfg), history)));
     let mut joins = tokio::task::JoinSet::new();
 
     info!(

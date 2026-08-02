@@ -13,6 +13,8 @@ pub struct Config {
     pub listen: Vec<ListenSection>,
     #[serde(default)]
     pub oper: OperSection,
+    #[serde(default)]
+    pub history: HistorySection,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -57,6 +59,42 @@ pub struct ListenSection {
     pub key: Option<PathBuf>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct HistorySection {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_history_path")]
+    pub path: PathBuf,
+    #[serde(default = "default_hist_max")]
+    pub max_per_channel: usize,
+    #[serde(default = "default_hist_replay")]
+    pub auto_replay_on_join: usize,
+}
+
+fn default_true() -> bool {
+    true
+}
+fn default_history_path() -> PathBuf {
+    PathBuf::from("./data/history.sqlite3")
+}
+fn default_hist_max() -> usize {
+    1000
+}
+fn default_hist_replay() -> usize {
+    50
+}
+
+impl Default for HistorySection {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            path: default_history_path(),
+            max_per_channel: default_hist_max(),
+            auto_replay_on_join: default_hist_replay(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct OperSection {
     /// When false, OPER always fails (no O-lines).
@@ -88,6 +126,7 @@ impl Default for Config {
                 key: None,
             }],
             oper: OperSection::default(),
+            history: HistorySection::default(),
         }
     }
 }

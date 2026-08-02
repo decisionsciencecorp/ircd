@@ -18,6 +18,8 @@ const SUPPORTED_CAPS: &[&str] = &[
     "server-time",
     "message-tags",
     "away-notify",
+    "batch",
+    "chathistory",
 ];
 
 pub async fn handle_client<R, W>(
@@ -78,11 +80,7 @@ where
             bus = bus_rx.recv() => {
                 match bus {
                     Ok(msg) if msg.skip_conn != conn_id && channels.contains(&msg.target) => {
-                        let line = if enabled_caps.contains("server-time") {
-                            tag_server_time(&msg.line)
-                        } else {
-                            msg.line.clone()
-                        };
+                        let line = adapt_bus_line(&msg.line, &enabled_caps);
                         writer.write_all(line.as_bytes()).await?;
                         // Drop local membership if we were kicked.
                         if let Some(n) = nick.as_deref() {
@@ -315,6 +313,100 @@ where
                         writer.write_all(
                             numeric(server_name, 366, nick_s, &[chan, "End of /NAMES list"]).as_bytes(),
                         ).await?;
+                        // Auto-replay recent channel history (Ergo-style convenience).
+                        let (hist, limit) = {
+                            let g = shared.lock().await;
+                            (
+                                g.history.clone(),
+                                g.config.history.auto_replay_on_join,
+                            )
+                        };
+                        if let (Some(store), lim) = (hist, limit) {
+                            if lim > 0 {
+                                if let Ok(rows) = store.latest(chan, lim) {
+                                    for h in rows {
+                                        let line = adapt_bus_line(&h.tagged_privmsg(), &enabled_caps);
+                                        writer.write_all(line.as_bytes()).await?;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    continue;
+                }
+
+                if msg.command_eq("CHATHISTORY") {
+                    let sub = msg.params.first().map(String::as_str).unwrap_or("");
+                    if !sub.eq_ignore_ascii_case("LATEST") {
+                        writer.write_all(
+                            numeric(
+                                server_name,
+                                400,
+                                nick_s,
+                                &["CHATHISTORY", "Only LATEST is implemented"],
+                            )
+                            .as_bytes(),
+                        )
+                        .await?;
+                        continue;
+                    }
+                    let target = msg.params.get(1).map(String::as_str).unwrap_or("");
+                    let limit = msg
+                        .params
+                        .get(3)
+                        .and_then(|s| s.parse::<usize>().ok())
+                        .unwrap_or(50)
+                        .clamp(1, 200);
+                    if !target.starts_with('#') || !channels.contains(target) {
+                        writer.write_all(
+                            numeric(
+                                server_name,
+                                442,
+                                nick_s,
+                                &[target, "You're not on that channel"],
+                            )
+                            .as_bytes(),
+                        )
+                        .await?;
+                        continue;
+                    }
+                    let store = { shared.lock().await.history.clone() };
+                    let Some(store) = store else {
+                        writer.write_all(
+                            numeric(
+                                server_name,
+                                400,
+                                nick_s,
+                                &["CHATHISTORY", "History is disabled"],
+                            )
+                            .as_bytes(),
+                        )
+                        .await?;
+                        continue;
+                    };
+                    let rows = store.latest(target, limit).unwrap_or_default();
+                    let batch_id = format!("ch{}", conn_id);
+                    let use_batch = enabled_caps.contains("batch");
+                    if use_batch {
+                        writer
+                            .write_all(
+                                format!(
+                                    ":{server_name} BATCH +{batch_id} chathistory {target}\r\n"
+                                )
+                                .as_bytes(),
+                            )
+                            .await?;
+                    }
+                    for h in rows {
+                        let line = adapt_bus_line(&h.tagged_privmsg(), &enabled_caps);
+                        writer.write_all(line.as_bytes()).await?;
+                    }
+                    if use_batch {
+                        writer
+                            .write_all(
+                                format!(":{server_name} BATCH -{batch_id}\r\n").as_bytes(),
+                            )
+                            .await?;
                     }
                     continue;
                 }
@@ -324,14 +416,15 @@ where
                         continue;
                     };
                     if target.starts_with('#') {
-                        let allowed = {
+                        let (allowed, hist) = {
                             let g = shared.lock().await;
-                            match g.channels.get(target.as_str()) {
+                            let allowed = match g.channels.get(target.as_str()) {
                                 Some(ch) if ch.members.contains(nick_s) => true,
                                 Some(ch) if !ch.mode_n => true,
                                 Some(_) => false,
                                 None => false,
-                            }
+                            };
+                            (allowed, g.history.clone())
                         };
                         if !allowed {
                             writer.write_all(
@@ -339,7 +432,14 @@ where
                             ).await?;
                             continue;
                         }
-                        let line = format!(":{prefix} PRIVMSG {target} :{text}\r\n");
+                        let line = if let Some(store) = hist {
+                            match store.append(target, &prefix, text) {
+                                Ok(h) => h.tagged_privmsg(),
+                                Err(_) => format!(":{prefix} PRIVMSG {target} :{text}\r\n"),
+                            }
+                        } else {
+                            format!(":{prefix} PRIVMSG {target} :{text}\r\n")
+                        };
                         let _ = shared.lock().await.bus.send(BusMsg {
                             target: target.clone(),
                             line,
@@ -699,6 +799,55 @@ where
         )
         .await?;
     Ok(())
+}
+
+/// Adapt a (possibly tagged) bus line to the client's negotiated caps.
+fn adapt_bus_line(line: &str, caps: &HashSet<String>) -> String {
+    let (tags, rest) = split_tags(line);
+    let Some(tags) = tags else {
+        if caps.contains("server-time") {
+            return tag_server_time(line);
+        }
+        return ensure_crlf(line);
+    };
+    let want_msg = caps.contains("message-tags");
+    let want_time = caps.contains("server-time");
+    if !want_msg && !want_time {
+        return ensure_crlf(rest);
+    }
+    let mut keep = Vec::new();
+    for part in tags.split(';') {
+        if part.is_empty() {
+            continue;
+        }
+        if part.starts_with("msgid=") && want_msg {
+            keep.push(part);
+        } else if part.starts_with("time=") && (want_time || want_msg) {
+            keep.push(part);
+        } else if want_msg && !part.starts_with("msgid=") && !part.starts_with("time=") {
+            keep.push(part);
+        }
+    }
+    if keep.is_empty() {
+        ensure_crlf(rest)
+    } else {
+        format!("@{} {}\r\n", keep.join(";"), rest)
+    }
+}
+
+fn split_tags(line: &str) -> (Option<&str>, &str) {
+    let line = line.trim_end_matches(['\r', '\n']);
+    if let Some(rest) = line.strip_prefix('@') {
+        if let Some((tags, body)) = rest.split_once(' ') {
+            return (Some(tags), body);
+        }
+    }
+    (None, line)
+}
+
+fn ensure_crlf(line: &str) -> String {
+    let line = line.trim_end_matches(['\r', '\n']);
+    format!("{line}\r\n")
 }
 
 fn tag_server_time(line: &str) -> String {

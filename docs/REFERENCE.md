@@ -41,6 +41,7 @@ We use **TOML** (`config.example.toml`), not Unreal’s block language. Knobs ma
 | Nick length / channel length limits | `[server] max_nick_length`, `max_channel_length` |
 | `listen { ip; port; }` | `[[listen]] bind = "ip:port"` |
 | `listen { … options { tls; } }` + cert files | `[[listen]] tls = true` + `cert` / `key` |
-| `oper { }` | `[oper]` stub (`enabled`, `name`, `password`) — auth not wired yet |
+| `oper { }` | `[oper]` (`enabled`, `name`, `password`) |
+| Channel history / replay | `[history]` sqlite path + `CHATHISTORY LATEST` + JOIN auto-replay |
 
 CLI `--bind` / `--tls-bind` replace the listen list when present (handy for lab). Prefer `--config` for standing instances.

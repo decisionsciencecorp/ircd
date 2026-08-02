@@ -8,7 +8,7 @@ Clean-room **Rust** IRC daemon for Decision Science Corp’s Mark × Cody IRC re
 
 ## Status
 
-Bootstrap. Speaks enough IRC to accept a client, register a nick, and echo on a test channel. Supports **plaintext** and **TLS** (rustls) binds, IRCv3 **CAP**, multi-user channels, and a minimal ops toolkit (**OPER**, channel **+o/+n/+t**, **TOPIC**, **KICK**, **MODE**).
+Bootstrap. Speaks enough IRC to accept a client, register a nick, and echo on a test channel. Supports **plaintext** / **TLS** / **WebSocket** / **WSS** binds, IRCv3 **CAP**, multi-user channels, a minimal ops toolkit (**OPER**, channel **+o/+n/+t**, **TOPIC**, **KICK**, **MODE**), and sqlite **channel history** (`CHATHISTORY LATEST` + JOIN auto-replay).
 
 ## Quick start
 
@@ -40,6 +40,13 @@ cargo run -p ircc -- --tls --host 127.0.0.1 --port 6697 --nick otto \
 
 Production networks should use real certificates; `gen-cert` is for local lab only.  
 `--tls` on `ircc` **disables certificate verification** — never point that at the public internet as a trust model.
+
+WebSocket (browser/Tauri path):
+
+```bash
+cargo run -p ircd -- --bind 127.0.0.1:6667 --ws-bind 127.0.0.1:7667
+# client: ws://127.0.0.1:7667 — send IRC lines as text frames
+```
 
 CAP smoke:
 
