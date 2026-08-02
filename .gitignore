@@ -1,4 +1,5 @@
 /target
+**/target
 **/*.rs.bk
 .DS_Store
 *.swp
@@ -7,3 +8,8 @@
 .otto-githooks-installed
 /certs/
 *.pem
+# cargo-fuzz artifacts (keep harness sources)
+/fuzz/corpus/
+/fuzz/artifacts/
+/fuzz/coverage/
+/fuzz/target/

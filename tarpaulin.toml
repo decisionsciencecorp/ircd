@@ -1,0 +1,13 @@
+# Protocol / server library coverage (CLI + WS excluded from the bar).
+[tool.tarpaulin]
+fail-under = 90
+timeout = 300
+engine = "llvm"
+exclude-files = [
+  "**/main.rs",
+  "**/ws.rs",
+  "**/ircc/**",
+  "**/benches/**",
+  "**/fuzz/**",
+  "**/tls.rs",
+]

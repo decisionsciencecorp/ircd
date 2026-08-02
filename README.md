@@ -65,10 +65,15 @@ Interactive: omit `--quit` and type `/join #test`, `/msg #test hi`, or bare line
 | `ircd-core` | Protocol parsing helpers + shared types |
 | `ircc` | CLI smoke client |
 
+## Testing
+
+Coverage (≥90% tarpaulin), proptest, doc tests, benches, and fuzz — see [`docs/TESTING.md`](docs/TESTING.md). Run heavy builds on **NewDev**, not Termux.
+
 ## Board
 
 Tasks project: [Mark × Cody — IRC client](https://tasks.decisionsciencecorp.com/admin/project.php?id=48)  
-Landscape research: [Doc #972](https://tasks.decisionsciencecorp.com/admin/doc.php?id=972)
+Landscape research: [Doc #972](https://tasks.decisionsciencecorp.com/admin/doc.php?id=972)  
+Testing list: **369** (tasks #2203–#2208)
 
 ## License
 

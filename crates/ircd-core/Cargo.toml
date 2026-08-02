@@ -5,7 +5,9 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "Core IRC protocol and state for the DSC Rust IRCd"
+description = "Shared IRC protocol helpers for dsc-ircd"
 
 [dependencies]
-tracing.workspace = true
+
+[dev-dependencies]
+proptest = "1"

@@ -208,3 +208,73 @@ impl Config {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn default_valid() {
+        Config::default().validate().unwrap();
+    }
+
+    #[test]
+    fn load_and_reject_bad_tls() {
+        let mut f = NamedTempFile::new().unwrap();
+        write!(
+            f,
+            r#"
+[server]
+name = "t"
+
+[[listen]]
+bind = "127.0.0.1:1"
+tls = true
+"#
+        )
+        .unwrap();
+        assert!(Config::load_file(f.path()).is_err());
+    }
+
+    #[test]
+    fn empty_name_fails() {
+        let mut c = Config::default();
+        c.server.name.clear();
+        assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn nick_len_and_empty_bind() {
+        let mut c = Config::default();
+        c.server.max_nick_length = 0;
+        assert!(c.validate().is_err());
+        c.server.max_nick_length = 30;
+        c.listen[0].bind.clear();
+        assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn load_ok_toml() {
+        let mut f = NamedTempFile::new().unwrap();
+        write!(
+            f,
+            r#"
+[server]
+name = "ok.test"
+motd = "hi"
+
+[[listen]]
+bind = "127.0.0.1:9"
+tls = false
+
+[history]
+enabled = false
+"#
+        )
+        .unwrap();
+        let c = Config::load_file(f.path()).unwrap();
+        assert_eq!(c.server.name, "ok.test");
+    }
+}

@@ -1,0 +1,29 @@
+[package]
+name = "ircd-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+# Standalone from the dsc-ircd workspace (cargo-fuzz requirement).
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+ircd-core = { path = "../crates/ircd-core" }
+
+[[bin]]
+name = "rawline_parse"
+path = "fuzz_targets/rawline_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "tags_adapt"
+path = "fuzz_targets/tags_adapt.rs"
+test = false
+doc = false
+bench = false

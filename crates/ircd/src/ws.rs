@@ -11,7 +11,7 @@ use tokio_tungstenite::tungstenite::Message;
 use tracing::warn;
 
 use crate::session;
-use crate::Shared;
+use crate::state::Shared;
 
 /// Run IRC session over an already-accepted WebSocket (plain or after TLS).
 pub async fn handle_websocket<S>(stream: S, peer: SocketAddr, shared: Arc<Mutex<Shared>>) -> Result<()>

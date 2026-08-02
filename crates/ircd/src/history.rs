@@ -4,6 +4,7 @@ use std::path::Path;
 use std::sync::Mutex;
 
 use anyhow::{Context, Result};
+use ircd_core::tags::unix_ms_to_rfc3339;
 use rusqlite::{params, Connection};
 
 #[derive(Debug, Clone)]
@@ -31,27 +32,6 @@ impl HistMsg {
             self.text
         )
     }
-}
-
-fn unix_ms_to_rfc3339(ts_ms: i64) -> String {
-    let secs = (ts_ms / 1000) as u64;
-    let millis = (ts_ms % 1000) as u32;
-    let days = secs / 86400;
-    let tod = secs % 86400;
-    let hour = tod / 3600;
-    let min = (tod % 3600) / 60;
-    let sec = tod % 60;
-    let z = days as i64 + 719468;
-    let era = if z >= 0 { z } else { z - 146096 } / 146097;
-    let doe = (z - era * 146097) as u64;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-    let y = yoe as i64 + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = if m <= 2 { y + 1 } else { y };
-    format!("{y:04}-{m:02}-{d:02}T{hour:02}:{min:02}:{sec:02}.{millis:03}Z")
 }
 
 pub struct HistoryStore {
@@ -131,5 +111,31 @@ impl HistoryStore {
         }
         out.reverse(); // chronological
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn append_latest_and_prune() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("h.sqlite3");
+        let store = HistoryStore::open(&path, 3).unwrap();
+        for i in 0..5 {
+            store
+                .append("#lab", "a!b@c", &format!("msg{i}"))
+                .unwrap();
+        }
+        let rows = store.latest("#lab", 50).unwrap();
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].text, "msg2");
+        assert_eq!(rows[2].text, "msg4");
+        assert!(rows[0].msgid().starts_with("dsc"));
+        let tagged = rows[0].tagged_privmsg();
+        assert!(tagged.contains("PRIVMSG #lab"));
+        assert!(tagged.starts_with("@msgid="));
     }
 }

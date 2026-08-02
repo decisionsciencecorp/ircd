@@ -1,161 +1,19 @@
-//! DSC IRCd bootstrap listener.
-//!
-//! Enough protocol for a client to register, join channels, and chat.
-//! Feature growth tracks UnrealIRCd as the ops/reference model (clean-room).
+//! dsc-ircd binary — CLI + listener spawn.
 
-mod config;
-mod history;
-mod session;
-mod tls;
-mod ws;
-
-use std::collections::{HashMap, HashSet};
-use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
+use ircd::config::{self, Config};
+use ircd::history::HistoryStore;
+use ircd::session;
+use ircd::state::Shared;
+use ircd::tls;
+use ircd::ws;
+use ircd::VERSION;
 use tokio::net::TcpListener;
-use tokio::sync::{broadcast, Mutex};
+use tokio::sync::Mutex;
 use tracing::{info, warn};
-
-use config::Config;
-use history::HistoryStore;
-
-const VERSION: &str = env!("CARGO_PKG_VERSION");
-
-#[derive(Clone)]
-struct BusMsg {
-    /// Channel name including `#`, or `*` for server-wide (unused for now).
-    target: String,
-    line: String,
-    /// Skip delivering back to this connection id.
-    skip_conn: u64,
-}
-
-/// Per-channel membership and simple modes (+n/+t) plus channel ops.
-#[derive(Debug, Clone)]
-pub(crate) struct ChannelState {
-    pub members: HashSet<String>,
-    pub ops: HashSet<String>,
-    pub topic: Option<String>,
-    /// +n — no messages from outside
-    pub mode_n: bool,
-    /// +t — only ops may set topic
-    pub mode_t: bool,
-}
-
-impl Default for ChannelState {
-    fn default() -> Self {
-        Self {
-            members: HashSet::new(),
-            ops: HashSet::new(),
-            topic: None,
-            mode_n: true,
-            mode_t: true,
-        }
-    }
-}
-
-impl ChannelState {
-    pub fn names_prefixed(&self) -> String {
-        let mut names: Vec<(String, String)> = self
-            .members
-            .iter()
-            .map(|n| {
-                let display = if self.ops.contains(n) {
-                    format!("@{n}")
-                } else {
-                    n.clone()
-                };
-                (n.to_ascii_lowercase(), display)
-            })
-            .collect();
-        names.sort_by(|a, b| a.0.cmp(&b.0));
-        names
-            .into_iter()
-            .map(|(_, d)| d)
-            .collect::<Vec<_>>()
-            .join(" ")
-    }
-
-    pub fn mode_chars(&self) -> String {
-        let mut s = String::from("+");
-        if self.mode_n {
-            s.push('n');
-        }
-        if self.mode_t {
-            s.push('t');
-        }
-        s
-    }
-
-    pub fn is_op(&self, nick: &str) -> bool {
-        self.ops.contains(nick)
-    }
-
-    pub fn remove_nick(&mut self, nick: &str) {
-        self.members.remove(nick);
-        self.ops.remove(nick);
-    }
-}
-
-pub(crate) struct Shared {
-    pub next_id: u64,
-    /// nick -> connection id (single nick registration for v0)
-    pub nicks: HashMap<String, u64>,
-    /// channel -> state
-    pub channels: HashMap<String, ChannelState>,
-    pub bus: broadcast::Sender<BusMsg>,
-    pub config: Arc<Config>,
-    pub history: Option<Arc<HistoryStore>>,
-    /// peer IP → active connection count
-    pub ip_counts: HashMap<String, usize>,
-    pub client_count: usize,
-}
-
-impl Shared {
-    fn new(config: Arc<Config>, history: Option<Arc<HistoryStore>>) -> Self {
-        let (bus, _) = broadcast::channel(256);
-        Self {
-            next_id: 1,
-            nicks: HashMap::new(),
-            channels: HashMap::new(),
-            bus,
-            config,
-            history,
-            ip_counts: HashMap::new(),
-            client_count: 0,
-        }
-    }
-
-    /// Admit a new connection under `[limits]`, or return a rejection reason.
-    pub fn try_admit(&mut self, peer: SocketAddr) -> Result<(), &'static str> {
-        let ip = peer.ip().to_string();
-        let lim = &self.config.limits;
-        if self.client_count >= lim.max_clients {
-            return Err("Too many connections");
-        }
-        let n = self.ip_counts.get(&ip).copied().unwrap_or(0);
-        if n >= lim.max_clients_per_ip {
-            return Err("Too many connections from your host");
-        }
-        self.client_count += 1;
-        *self.ip_counts.entry(ip).or_default() += 1;
-        Ok(())
-    }
-
-    pub fn release(&mut self, peer: SocketAddr) {
-        let ip = peer.ip().to_string();
-        self.client_count = self.client_count.saturating_sub(1);
-        if let Some(n) = self.ip_counts.get_mut(&ip) {
-            *n = n.saturating_sub(1);
-            if *n == 0 {
-                self.ip_counts.remove(&ip);
-            }
-        }
-    }
-}
 
 struct CliOverlay {
     config_path: Option<PathBuf>,
@@ -264,7 +122,6 @@ fn parse_cli(argv: &[String]) -> Result<CliOverlay> {
 }
 
 fn merge_config(mut cfg: Config, cli: &CliOverlay) -> Result<Config> {
-    // If CLI specifies binds, replace listen list with CLI-derived entries.
     let mut listens = Vec::new();
     if let Some(bind) = &cli.bind {
         listens.push(config::ListenSection {

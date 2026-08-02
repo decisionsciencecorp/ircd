@@ -2,6 +2,11 @@
 resolver = "2"
 members = ["crates/ircd", "crates/ircd-core", "crates/ircc"]
 default-members = ["crates/ircd"]
+# cargo-fuzz crate lives outside the workspace graph
+exclude = ["fuzz"]
+
+[profile.release]
+debug = 1
 
 [workspace.package]
 version = "0.1.0"

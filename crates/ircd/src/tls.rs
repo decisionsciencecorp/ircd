@@ -82,3 +82,17 @@ pub fn gen_self_signed(out_dir: &Path, common_name: &str) -> Result<(PathBuf, Pa
 
     Ok((cert_path, key_path))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn gen_and_load_acceptor() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let dir = tempdir().unwrap();
+        let (cert, key) = gen_self_signed(dir.path(), "tls.test").unwrap();
+        load_acceptor(&cert, &key).unwrap();
+    }
+}

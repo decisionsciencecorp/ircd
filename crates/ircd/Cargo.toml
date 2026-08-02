@@ -7,6 +7,10 @@ authors.workspace = true
 repository.workspace = true
 description = "DSC IRC server (Rust) — UnrealIRCd-inspired, clean-room"
 
+[lib]
+name = "ircd"
+path = "src/lib.rs"
+
 [[bin]]
 name = "ircd"
 path = "src/main.rs"
@@ -27,3 +31,17 @@ tokio-tungstenite.workspace = true
 futures-util.workspace = true
 base64.workspace = true
 rusqlite.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time", "test-util"] }
+criterion = { version = "0.5", features = ["html_reports"] }
+proptest = "1"
+
+[[bench]]
+name = "history_bench"
+harness = false
+
+[[bench]]
+name = "routing_bench"
+harness = false
