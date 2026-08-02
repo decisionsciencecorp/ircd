@@ -127,3 +127,31 @@ async fn unregistered_gets_451() {
     })
     .await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn truthful_cap_ls_omits_unimplemented() {
+    let shared = shared_plain();
+    with_client(shared, 2, |mut w, mut r| async move {
+        w.write_all(b"CAP LS\r\nQUIT :x\r\n").await.unwrap();
+        let lines = read_until(&mut r, |l| l.iter().any(|x| x.contains("CAP") && x.contains("LS"))).await;
+        let ls = lines
+            .iter()
+            .find(|x| x.contains("LS"))
+            .expect("CAP LS line");
+        for bad in [
+            "away-notify",
+            "message-tags",
+            "batch",
+            "chathistory",
+            "account-tag",
+            "server-time",
+            "multi-prefix",
+        ] {
+            assert!(
+                !ls.to_ascii_lowercase().contains(bad),
+                "CAP LS must not advertise {bad}: {ls}"
+            );
+        }
+    })
+    .await;
+}

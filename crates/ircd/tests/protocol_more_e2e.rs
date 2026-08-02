@@ -75,10 +75,9 @@ async fn rejoin_and_topic_get_set() {
 async fn mode_tn_cap_disable_bad_b64() {
     let shared = shared_plain();
     with_two_clients(shared, |(mut w1, mut r1), (mut w2, mut r2)| async move {
-        w1.write_all(b"CAP LS\r\nNICK op\r\nUSER o 0 * :O\r\nCAP REQ :server-time\r\nCAP END\r\nJOIN #z\r\nMODE #z -t\r\nMODE #z -n\r\nMODE #z +t\r\nMODE #z +n\r\nCAP REQ :-server-time\r\n")
+        w1.write_all(b"CAP LS\r\nNICK op\r\nUSER o 0 * :O\r\nCAP END\r\nJOIN #z\r\nMODE #z -t\r\nMODE #z -n\r\nMODE #z +t\r\nMODE #z +n\r\n")
             .await
             .unwrap();
-        let _ = read_until(&mut r1, |l| l.iter().any(|x| x.contains("ACK") && x.contains("-server-time"))).await;
         w2.write_all(b"CAP LS\r\nNICK out\r\nUSER u 0 * :U\r\nCAP REQ :sasl\r\nAUTHENTICATE PLAIN\r\n")
             .await
             .unwrap();

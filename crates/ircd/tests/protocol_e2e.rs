@@ -24,7 +24,7 @@ async fn register_join_privmsg_chathistory() {
         tokio::time::sleep(Duration::from_millis(30)).await;
 
         w2.write_all(
-            b"CAP LS\r\nNICK bob\r\nUSER b 0 * :B\r\nCAP REQ :batch chathistory message-tags\r\nCAP END\r\nJOIN #lab\r\n",
+            b"CAP LS\r\nNICK bob\r\nUSER b 0 * :B\r\nCAP END\r\nJOIN #lab\r\n",
         )
         .await
         .unwrap();
@@ -37,8 +37,9 @@ async fn register_join_privmsg_chathistory() {
         w2.write_all(b"CHATHISTORY LATEST #lab * 10\r\nQUIT :done\r\n")
             .await
             .unwrap();
-        let more = read_until(&mut r2, |l| l.iter().any(|x| x.contains("BATCH -"))).await;
-        assert!(more.iter().any(|l| l.contains("chathistory")));
+        // Without advertising `batch`/`chathistory`, history still replays as PRIVMSG lines.
+        let more = read_until(&mut r2, |l| l.iter().any(|x| x.contains("hello hist"))).await;
+        assert!(more.iter().any(|l| l.contains("hello hist")), "{more:?}");
         w1.write_all(b"QUIT :done\r\n").await.unwrap();
     })
     .await;

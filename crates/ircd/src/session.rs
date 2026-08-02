@@ -15,16 +15,9 @@ use tracing::info;
 use crate::state::{BusMsg, Shared};
 use crate::VERSION;
 
-/// Starter IRCv3 caps (advertise even when payload is still thin).
-const BASE_CAPS: &[&str] = &[
-    "multi-prefix",
-    "server-time",
-    "message-tags",
-    "away-notify",
-    "batch",
-    "chathistory",
-    "account-tag",
-];
+/// Caps advertised without per-cap conformance tests must stay empty (A1 / Doc #974).
+/// SASL is added conditionally in `advertised_caps` when accounts exist.
+const BASE_CAPS: &[&str] = &[];
 
 fn advertised_caps(has_accounts: bool) -> Vec<String> {
     let mut caps: Vec<String> = BASE_CAPS.iter().map(|s| (*s).to_string()).collect();
@@ -507,28 +500,10 @@ where
                         continue;
                     };
                     let rows = store.latest(target, limit).unwrap_or_default();
-                    let batch_id = format!("ch{}", conn_id);
-                    let use_batch = enabled_caps.contains("batch");
-                    if use_batch {
-                        writer
-                            .write_all(
-                                format!(
-                                    ":{server_name} BATCH +{batch_id} chathistory {target}\r\n"
-                                )
-                                .as_bytes(),
-                            )
-                            .await?;
-                    }
+                    // BATCH / chathistory CAP not advertised until Protocol P2 (#2227).
                     for h in rows {
                         let line = adapt_bus_line(&h.tagged_privmsg(), &enabled_caps);
                         writer.write_all(line.as_bytes()).await?;
-                    }
-                    if use_batch {
-                        writer
-                            .write_all(
-                                format!(":{server_name} BATCH -{batch_id}\r\n").as_bytes(),
-                            )
-                            .await?;
                     }
                     continue;
                 }
@@ -1159,24 +1134,30 @@ mod tests {
         let advertised = advertised_caps(true);
         let mut enabled = HashSet::new();
         let (ack, nak) = apply_cap_req(
-            "server-time message-tags bogon -server-time",
+            "sasl bogon -sasl away-notify",
             &advertised,
             &mut enabled,
         );
-        assert!(ack.iter().any(|t| t == "server-time"));
-        assert!(ack.iter().any(|t| t == "message-tags"));
-        assert!(ack.iter().any(|t| t == "-server-time"));
+        assert!(ack.iter().any(|t| t == "sasl"));
+        assert!(ack.iter().any(|t| t == "-sasl"));
         assert!(nak.iter().any(|t| t == "bogon"));
-        assert!(enabled.contains("message-tags"));
-        assert!(!enabled.contains("server-time"));
+        assert!(nak.iter().any(|t| t == "away-notify"));
+        assert!(!enabled.contains("sasl"));
     }
 
     #[test]
-    fn advertised_caps_include_sasl_when_configured() {
+    fn advertised_caps_truthful_base_empty_sasl_conditional() {
         let with = advertised_caps(true);
         assert!(with.iter().any(|c| c.starts_with("sasl")));
+        assert!(!with.iter().any(|c| c == "away-notify"));
+        assert!(!with.iter().any(|c| c == "message-tags"));
+        assert!(!with.iter().any(|c| c == "batch"));
+        assert!(!with.iter().any(|c| c == "chathistory"));
+        assert!(!with.iter().any(|c| c == "account-tag"));
+        assert!(!with.iter().any(|c| c == "server-time"));
+        assert!(!with.iter().any(|c| c == "multi-prefix"));
         let without = advertised_caps(false);
-        assert!(!without.iter().any(|c| c.starts_with("sasl")));
+        assert!(without.is_empty());
     }
 
     #[test]
