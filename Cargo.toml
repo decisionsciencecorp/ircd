@@ -1,0 +1,18 @@
+[workspace]
+resolver = "2"
+members = ["crates/ircd", "crates/ircd-core"]
+default-members = ["crates/ircd"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["Decision Science Corp"]
+repository = "https://github.com/decisionsciencecorp/ircd"
+
+[workspace.dependencies]
+ircd-core = { path = "crates/ircd-core" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time", "signal"] }
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

@@ -1,0 +1,19 @@
+[package]
+name = "ircd"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "DSC IRC server (Rust) — UnrealIRCd-inspired, clean-room"
+
+[[bin]]
+name = "ircd"
+path = "src/main.rs"
+
+[dependencies]
+ircd-core.workspace = true
+tokio.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

@@ -1,0 +1,11 @@
+[package]
+name = "ircd-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Core IRC protocol and state for the DSC Rust IRCd"
+
+[dependencies]
+tracing.workspace = true
