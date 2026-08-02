@@ -57,3 +57,10 @@ password = "alice-pass"
 [[accounts]]
 name = "bob"
 password = "bob-pass"
+
+# Connection / flood safety (lab defaults — tighten for any public listen).
+[limits]
+max_clients = 256
+max_clients_per_ip = 32
+flood_lines_per_window = 30
+flood_window_secs = 10

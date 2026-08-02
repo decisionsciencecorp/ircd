@@ -3,6 +3,7 @@
 use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use ircd_core::{numeric, server_notice, RawLine};
@@ -61,11 +62,28 @@ where
 {
     let (conn_id, cfg) = {
         let mut g = shared.lock().await;
+        if let Err(reason) = g.try_admit(peer) {
+            drop(g);
+            let _ = writer
+                .write_all(format!("ERROR :Closing Link: [{peer}] ({reason})\r\n").as_bytes())
+                .await;
+            info!(%peer, %reason, "connection rejected");
+            return Ok(());
+        }
         let id = g.next_id;
         g.next_id += 1;
         (id, Arc::clone(&g.config))
     };
+    // Decrement connection counters when this session ends (including Err paths).
+    let _conn_guard = ConnRelease {
+        shared: Arc::clone(&shared),
+        peer,
+    };
     let server_name = cfg.server.name.as_str();
+    let flood_limit = cfg.limits.flood_lines_per_window;
+    let flood_window = Duration::from_secs(cfg.limits.flood_window_secs.max(1));
+    let mut flood_count = 0u32;
+    let mut flood_window_start = Instant::now();
 
     let mut reader = BufReader::new(reader);
     let mut bus_rx = shared.lock().await.bus.subscribe();
@@ -135,6 +153,21 @@ where
                     break;
                 }
                 let raw = std::mem::take(&mut line_buf);
+                // Simple recv flood guard (line count per window).
+                if flood_window_start.elapsed() >= flood_window {
+                    flood_window_start = Instant::now();
+                    flood_count = 0;
+                }
+                flood_count = flood_count.saturating_add(1);
+                if flood_count > flood_limit {
+                    let _ = writer
+                        .write_all(
+                            format!("ERROR :Closing Link: [{peer}] (Excess Flood)\r\n").as_bytes(),
+                        )
+                        .await;
+                    info!(%peer, "excess flood; closing");
+                    break;
+                }
                 let Some(msg) = RawLine::parse(&raw) else { continue };
 
                 if msg.command_eq("CAP") {
@@ -764,6 +797,22 @@ where
     }
 
     Ok(())
+}
+
+/// Releases `[limits]` admission counters when the session task ends.
+struct ConnRelease {
+    shared: Arc<Mutex<Shared>>,
+    peer: SocketAddr,
+}
+
+impl Drop for ConnRelease {
+    fn drop(&mut self) {
+        let shared = Arc::clone(&self.shared);
+        let peer = self.peer;
+        tokio::spawn(async move {
+            shared.lock().await.release(peer);
+        });
+    }
 }
 
 async fn handle_cap<W>(

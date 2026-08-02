@@ -44,5 +44,6 @@ We use **TOML** (`config.example.toml`), not Unreal’s block language. Knobs ma
 | `oper { }` | `[oper]` (`enabled`, `name`, `password`) |
 | Channel history / replay | `[history]` sqlite path + `CHATHISTORY LATEST` + JOIN auto-replay |
 | NickServ-style accounts | `[[accounts]]` + IRCv3 **SASL PLAIN** (`AUTHENTICATE`) + `account-tag` |
+| Connection class / flood | `[limits]` — `max_clients`, `max_clients_per_ip`, `flood_lines_per_window`, `flood_window_secs` |
 
 CLI `--bind` / `--tls-bind` replace the listen list when present (handy for lab). Prefer `--config` for standing instances.

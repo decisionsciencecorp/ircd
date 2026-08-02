@@ -18,12 +18,50 @@ pub struct Config {
     /// Built-in SASL PLAIN accounts (no external services in v0).
     #[serde(default)]
     pub accounts: Vec<AccountSection>,
+    #[serde(default)]
+    pub limits: LimitsSection,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct AccountSection {
     pub name: String,
     pub password: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct LimitsSection {
+    #[serde(default = "default_max_clients")]
+    pub max_clients: usize,
+    #[serde(default = "default_max_per_ip")]
+    pub max_clients_per_ip: usize,
+    #[serde(default = "default_flood_lines")]
+    pub flood_lines_per_window: u32,
+    #[serde(default = "default_flood_window")]
+    pub flood_window_secs: u64,
+}
+
+fn default_max_clients() -> usize {
+    256
+}
+fn default_max_per_ip() -> usize {
+    32
+}
+fn default_flood_lines() -> u32 {
+    30
+}
+fn default_flood_window() -> u64 {
+    10
+}
+
+impl Default for LimitsSection {
+    fn default() -> Self {
+        Self {
+            max_clients: default_max_clients(),
+            max_clients_per_ip: default_max_per_ip(),
+            flood_lines_per_window: default_flood_lines(),
+            flood_window_secs: default_flood_window(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -137,6 +175,7 @@ impl Default for Config {
             oper: OperSection::default(),
             history: HistorySection::default(),
             accounts: Vec::new(),
+            limits: LimitsSection::default(),
         }
     }
 }

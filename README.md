@@ -8,7 +8,7 @@ Clean-room **Rust** IRC daemon for Decision Science Corp’s Mark × Cody IRC re
 
 ## Status
 
-Bootstrap. Speaks enough IRC to accept a client, register a nick, and echo on a test channel. Supports **plaintext** / **TLS** / **WebSocket** / **WSS** binds, IRCv3 **CAP**, multi-user channels, a minimal ops toolkit (**OPER**, channel **+o/+n/+t**, **TOPIC**, **KICK**, **MODE**), and sqlite **channel history** (`CHATHISTORY LATEST` + JOIN auto-replay).
+Bootstrap. Speaks enough IRC to accept a client, register a nick, and echo on a test channel. Supports **plaintext** / **TLS** / **WebSocket** / **WSS** binds, IRCv3 **CAP**, multi-user channels, a minimal ops toolkit (**OPER**, channel **+o/+n/+t**, **TOPIC**, **KICK**, **MODE**), sqlite **channel history** (`CHATHISTORY LATEST` + JOIN auto-replay), **SASL PLAIN** against built-in `[[accounts]]`, and basic **connection/flood limits** (`[limits]`).
 
 ## Quick start
 

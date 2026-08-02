@@ -10,6 +10,7 @@ mod tls;
 mod ws;
 
 use std::collections::{HashMap, HashSet};
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -108,6 +109,9 @@ pub(crate) struct Shared {
     pub bus: broadcast::Sender<BusMsg>,
     pub config: Arc<Config>,
     pub history: Option<Arc<HistoryStore>>,
+    /// peer IP → active connection count
+    pub ip_counts: HashMap<String, usize>,
+    pub client_count: usize,
 }
 
 impl Shared {
@@ -120,6 +124,35 @@ impl Shared {
             bus,
             config,
             history,
+            ip_counts: HashMap::new(),
+            client_count: 0,
+        }
+    }
+
+    /// Admit a new connection under `[limits]`, or return a rejection reason.
+    pub fn try_admit(&mut self, peer: SocketAddr) -> Result<(), &'static str> {
+        let ip = peer.ip().to_string();
+        let lim = &self.config.limits;
+        if self.client_count >= lim.max_clients {
+            return Err("Too many connections");
+        }
+        let n = self.ip_counts.get(&ip).copied().unwrap_or(0);
+        if n >= lim.max_clients_per_ip {
+            return Err("Too many connections from your host");
+        }
+        self.client_count += 1;
+        *self.ip_counts.entry(ip).or_default() += 1;
+        Ok(())
+    }
+
+    pub fn release(&mut self, peer: SocketAddr) {
+        let ip = peer.ip().to_string();
+        self.client_count = self.client_count.saturating_sub(1);
+        if let Some(n) = self.ip_counts.get_mut(&ip) {
+            *n = n.saturating_sub(1);
+            if *n == 0 {
+                self.ip_counts.remove(&ip);
+            }
         }
     }
 }
