@@ -12,6 +12,14 @@ use tracing::info;
 
 use crate::{BusMsg, Shared, SERVER_NAME, VERSION};
 
+/// Starter IRCv3 caps (advertise even when payload is still thin).
+const SUPPORTED_CAPS: &[&str] = &[
+    "multi-prefix",
+    "server-time",
+    "message-tags",
+    "away-notify",
+];
+
 pub async fn handle_client<R, W>(
     reader: R,
     mut writer: W,
@@ -58,6 +66,8 @@ where
     let mut user: Option<String> = None;
     let mut realname: Option<String> = None;
     let mut registered = false;
+    let mut cap_negotiating = false;
+    let mut enabled_caps: HashSet<String> = HashSet::new();
     let mut line_buf = String::new();
     let mut channels: HashSet<String> = HashSet::new();
 
@@ -66,7 +76,12 @@ where
             bus = bus_rx.recv() => {
                 match bus {
                     Ok(msg) if msg.skip_conn != conn_id && channels.contains(&msg.target) => {
-                        writer.write_all(msg.line.as_bytes()).await?;
+                        let line = if enabled_caps.contains("server-time") {
+                            tag_server_time(&msg.line)
+                        } else {
+                            msg.line.clone()
+                        };
+                        writer.write_all(line.as_bytes()).await?;
                     }
                     Ok(_) => {}
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
@@ -82,17 +97,21 @@ where
                 let Some(msg) = RawLine::parse(&raw) else { continue };
 
                 if msg.command_eq("CAP") {
-                    if msg.params.first().map(|s| s.eq_ignore_ascii_case("LS")).unwrap_or(false) {
-                        let nick_s = nick.as_deref().unwrap_or("*");
-                        writer.write_all(
-                            format!(":{SERVER_NAME} CAP {nick_s} LS :\r\n").as_bytes(),
-                        ).await?;
-                    } else if msg.params.first().map(|s| s.eq_ignore_ascii_case("END")).unwrap_or(false) {
-                        // ignore
-                    } else {
-                        let nick_s = nick.as_deref().unwrap_or("*");
-                        writer.write_all(
-                            format!(":{SERVER_NAME} CAP {nick_s} NAK :\r\n").as_bytes(),
+                    handle_cap(
+                        &mut writer,
+                        &msg,
+                        nick.as_deref(),
+                        &mut cap_negotiating,
+                        &mut enabled_caps,
+                    ).await?;
+                    if msg.params.first().map(|s| s.eq_ignore_ascii_case("END")).unwrap_or(false) {
+                        try_register(
+                            &mut writer,
+                            &mut registered,
+                            nick.as_deref(),
+                            user.as_deref(),
+                            realname.as_deref(),
+                            cap_negotiating,
                         ).await?;
                     }
                     continue;
@@ -130,6 +149,7 @@ where
                         nick.as_deref(),
                         user.as_deref(),
                         realname.as_deref(),
+                        cap_negotiating,
                     ).await?;
                     continue;
                 }
@@ -143,6 +163,7 @@ where
                         nick.as_deref(),
                         user.as_deref(),
                         realname.as_deref(),
+                        cap_negotiating,
                     ).await?;
                     continue;
                 }
@@ -176,10 +197,21 @@ where
                         if !chan.starts_with('#') {
                             continue;
                         }
-                        {
+                        let names_list = {
                             let mut g = shared.lock().await;
-                            g.channels.entry(chan.to_string()).or_default().insert(nick_s.to_string());
-                        }
+                            g.channels
+                                .entry(chan.to_string())
+                                .or_default()
+                                .insert(nick_s.to_string());
+                            let mut names: Vec<String> = g
+                                .channels
+                                .get(chan)
+                                .map(|m| m.iter().cloned().collect())
+                                .unwrap_or_default();
+                            names.sort();
+                            // multi-prefix: no channel modes yet — plain nicks.
+                            names.join(" ")
+                        };
                         channels.insert(chan.to_string());
                         let join_line = format!(":{prefix} JOIN :{chan}\r\n");
                         writer.write_all(join_line.as_bytes()).await?;
@@ -192,7 +224,7 @@ where
                             numeric(SERVER_NAME, 332, nick_s, &[chan, "dsc-ircd v0 test channel"]).as_bytes(),
                         ).await?;
                         writer.write_all(
-                            numeric(SERVER_NAME, 353, nick_s, &["=", chan, nick_s]).as_bytes(),
+                            numeric(SERVER_NAME, 353, nick_s, &["=", chan, names_list.as_str()]).as_bytes(),
                         ).await?;
                         writer.write_all(
                             numeric(SERVER_NAME, 366, nick_s, &[chan, "End of /NAMES list"]).as_bytes(),
@@ -262,17 +294,139 @@ where
     Ok(())
 }
 
+async fn handle_cap<W>(
+    writer: &mut W,
+    msg: &RawLine,
+    nick: Option<&str>,
+    cap_negotiating: &mut bool,
+    enabled_caps: &mut HashSet<String>,
+) -> Result<()>
+where
+    W: AsyncWriteExt + Unpin,
+{
+    let nick_s = nick.unwrap_or("*");
+    let sub = msg.params.first().map(String::as_str).unwrap_or("");
+    if sub.eq_ignore_ascii_case("LS") {
+        *cap_negotiating = true;
+        let list = SUPPORTED_CAPS.join(" ");
+        writer
+            .write_all(format!(":{SERVER_NAME} CAP {nick_s} LS :{list}\r\n").as_bytes())
+            .await?;
+        return Ok(());
+    }
+    if sub.eq_ignore_ascii_case("LIST") {
+        let list = enabled_caps.iter().cloned().collect::<Vec<_>>().join(" ");
+        writer
+            .write_all(format!(":{SERVER_NAME} CAP {nick_s} LIST :{list}\r\n").as_bytes())
+            .await?;
+        return Ok(());
+    }
+    if sub.eq_ignore_ascii_case("REQ") {
+        *cap_negotiating = true;
+        let mut ack = Vec::new();
+        let mut nak = Vec::new();
+        let tokens = msg
+            .params
+            .get(1)
+            .map(String::as_str)
+            .unwrap_or("")
+            .split_whitespace();
+        for tok in tokens {
+            let disable = tok.starts_with('-');
+            let name = tok.trim_start_matches('-');
+            if !SUPPORTED_CAPS.iter().any(|c| *c == name) {
+                nak.push(tok.to_string());
+                continue;
+            }
+            if disable {
+                enabled_caps.remove(name);
+            } else {
+                enabled_caps.insert(name.to_string());
+            }
+            ack.push(tok.to_string());
+        }
+        if !ack.is_empty() {
+            writer
+                .write_all(
+                    format!(":{SERVER_NAME} CAP {nick_s} ACK :{}\r\n", ack.join(" ")).as_bytes(),
+                )
+                .await?;
+        }
+        if !nak.is_empty() {
+            writer
+                .write_all(
+                    format!(":{SERVER_NAME} CAP {nick_s} NAK :{}\r\n", nak.join(" ")).as_bytes(),
+                )
+                .await?;
+        }
+        return Ok(());
+    }
+    if sub.eq_ignore_ascii_case("END") {
+        *cap_negotiating = false;
+        return Ok(());
+    }
+    writer
+        .write_all(
+            numeric(
+                SERVER_NAME,
+                410,
+                nick_s,
+                &[sub, "Invalid CAP subcommand"],
+            )
+            .as_bytes(),
+        )
+        .await?;
+    Ok(())
+}
+
+fn tag_server_time(line: &str) -> String {
+    // RFC3339-ish UTC; millisecond precision is enough for lab.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    let secs = now.as_secs();
+    let millis = now.subsec_millis();
+    // Keep formatting simple without chrono dependency.
+    let days = secs / 86400;
+    let tod = secs % 86400;
+    let hour = tod / 3600;
+    let min = (tod % 3600) / 60;
+    let sec = tod % 60;
+    // Civil date from Unix day (algorithm from Howard Hinnant)
+    let z = days as i64 + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = (z - era * 146097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    let stamp = format!("{y:04}-{m:02}-{d:02}T{hour:02}:{min:02}:{sec:02}.{millis:03}Z");
+    if let Some(rest) = line.strip_prefix('@') {
+        // already tagged
+        format!("@time={stamp};{rest}")
+    } else {
+        format!("@time={stamp} {line}")
+    }
+}
+
 async fn try_register<W>(
     writer: &mut W,
     registered: &mut bool,
     nick: Option<&str>,
     user: Option<&str>,
     _realname: Option<&str>,
+    cap_negotiating: bool,
 ) -> Result<()>
 where
     W: AsyncWriteExt + Unpin,
 {
     if *registered {
+        return Ok(());
+    }
+    if cap_negotiating {
         return Ok(());
     }
     let (Some(nick), Some(_user)) = (nick, user) else {

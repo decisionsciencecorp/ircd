@@ -8,7 +8,7 @@ Clean-room **Rust** IRC daemon for Decision Science Corp’s Mark × Cody IRC re
 
 ## Status
 
-Bootstrap. Speaks enough IRC to accept a client, register a nick, and echo on a test channel. Supports **plaintext** and **TLS** (rustls) binds in one process.
+Bootstrap. Speaks enough IRC to accept a client, register a nick, and echo on a test channel. Supports **plaintext** and **TLS** (rustls) binds, IRCv3 **CAP** (multi-prefix, server-time, message-tags, away-notify), and multi-user channel NAMES/JOIN/PART/QUIT fanout.
 
 ## Quick start
 

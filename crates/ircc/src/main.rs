@@ -25,6 +25,8 @@ struct Args {
     msg: Option<String>,
     quit_after: bool,
     tls: bool,
+    /// Negotiate IRCv3 CAP before NICK/USER.
+    cap: bool,
 }
 
 fn parse_args() -> Result<Args> {
@@ -36,6 +38,7 @@ fn parse_args() -> Result<Args> {
     let mut msg = None;
     let mut quit_after = false;
     let mut tls = false;
+    let mut cap = false;
 
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
@@ -48,12 +51,14 @@ fn parse_args() -> Result<Args> {
             "--msg" => msg = Some(it.next().context("--msg needs value")?),
             "--quit" => quit_after = true,
             "--tls" => tls = true,
+            "--cap" => cap = true,
             "-h" | "--help" => {
                 println!(
                     "ircc — dsc-ircd smoke CLI\n\n\
-                     --host HOST --port PORT --nick NICK [--user USER] [--tls]\n\
+                     --host HOST --port PORT --nick NICK [--user USER] [--tls] [--cap]\n\
                      [--join #chan] [--msg text] [--quit]\n\n\
                      --tls accepts any server cert (lab only).\n\
+                     --cap sends CAP LS / REQ / END before register.\n\
                      Without --quit, reads stdin lines as raw IRC or bare channel chat if JOINed."
                 );
                 std::process::exit(0);
@@ -77,6 +82,7 @@ fn parse_args() -> Result<Args> {
         msg,
         quit_after,
         tls,
+        cap,
     })
 }
 
@@ -177,6 +183,56 @@ where
 {
     let mut reader = BufReader::new(reader);
 
+    if args.cap {
+        send_line(&mut writer, "CAP LS 302\r\n").await?;
+        // Read until CAP LS reply (bounded)
+        let mut buf = String::new();
+        for _ in 0..20 {
+            buf.clear();
+            let n = reader.read_line(&mut buf).await?;
+            if n == 0 {
+                break;
+            }
+            let display = buf.trim_end_matches(['\r', '\n']);
+            println!("<< {display}");
+            if let Some(msg) = ircd_core::RawLine::parse(display) {
+                if msg.command_eq("CAP")
+                    && msg
+                        .params
+                        .get(1)
+                        .map(|s| s.eq_ignore_ascii_case("LS"))
+                        .unwrap_or(false)
+                {
+                    break;
+                }
+            }
+        }
+        send_line(
+            &mut writer,
+            "CAP REQ :multi-prefix server-time message-tags away-notify\r\n",
+        )
+        .await?;
+        for _ in 0..10 {
+            buf.clear();
+            let n = reader.read_line(&mut buf).await?;
+            if n == 0 {
+                break;
+            }
+            let display = buf.trim_end_matches(['\r', '\n']);
+            println!("<< {display}");
+            if let Some(msg) = ircd_core::RawLine::parse(display) {
+                if msg.command_eq("CAP")
+                    && msg.params.get(1).map(|s| {
+                        s.eq_ignore_ascii_case("ACK") || s.eq_ignore_ascii_case("NAK")
+                    }).unwrap_or(false)
+                {
+                    break;
+                }
+            }
+        }
+        send_line(&mut writer, "CAP END\r\n").await?;
+    }
+
     send_line(&mut writer, &format!("NICK {}\r\n", args.nick)).await?;
     send_line(
         &mut writer,
@@ -203,7 +259,6 @@ where
     let mut line_buf = String::new();
     let mut registered = false;
     let mut joined = args.join.is_none();
-    let mut msg_sent = args.msg.is_none();
 
     loop {
         tokio::select! {
