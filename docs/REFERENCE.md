@@ -63,3 +63,14 @@ CLI `--bind` / `--tls-bind` replace the listen list when present (handy for lab)
 | `flood_lines_per_window` / `flood_window_secs` | 30 / 10 | Recv flood guard |
 
 History retention: `[history] max_per_channel`, `max_total_rows` (see A6).
+
+
+## WebSocket (`[websocket]`)
+
+| Key | Default | Effect |
+|-----|---------|--------|
+| `allowed_origins` | `[]` | Exact `Origin` allowlist; empty denies browser Origins |
+| `allow_missing_origin` | `true` | Native clients with no Origin |
+| `require_irc_subprotocol` | `true` | Require `Sec-WebSocket-Protocol: irc` |
+
+Admission runs before the WS upgrade. Policy helpers: `ws_policy` / `evaluate_ws_handshake`.

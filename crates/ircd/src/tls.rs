@@ -6,11 +6,14 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
+
+use crate::fs_perms::{create_private_file, ensure_private_dir, ensure_private_file};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use rustls::ServerConfig;
 use tokio_rustls::TlsAcceptor;
 
 pub fn load_acceptor(cert_path: &Path, key_path: &Path) -> Result<TlsAcceptor> {
+    ensure_private_file(key_path)?;
     let certs = load_certs(cert_path)?;
     let key = load_key(key_path)?;
     let mut config = ServerConfig::builder()
@@ -57,7 +60,7 @@ fn load_key(path: &Path) -> Result<PrivateKeyDer<'static>> {
 
 /// Write a lab self-signed cert+key under `out_dir` (`cert.pem` / `key.pem`).
 pub fn gen_self_signed(out_dir: &Path, common_name: &str) -> Result<(PathBuf, PathBuf)> {
-    std::fs::create_dir_all(out_dir).with_context(|| format!("mkdir {}", out_dir.display()))?;
+    ensure_private_dir(out_dir)?;
     let cert_path = out_dir.join("cert.pem");
     let key_path = out_dir.join("key.pem");
 
@@ -76,9 +79,13 @@ pub fn gen_self_signed(out_dir: &Path, common_name: &str) -> Result<(PathBuf, Pa
     let key_pair = rcgen::KeyPair::generate()?;
     let cert = params.self_signed(&key_pair)?;
 
-    std::fs::write(&cert_path, cert.pem()).with_context(|| format!("write {}", cert_path.display()))?;
-    std::fs::write(&key_path, key_pair.serialize_pem())
-        .with_context(|| format!("write {}", key_path.display()))?;
+    {
+        use std::io::Write;
+        let mut f = create_private_file(&cert_path)?;
+        f.write_all(cert.pem().as_bytes())?;
+        let mut f = create_private_file(&key_path)?;
+        f.write_all(key_pair.serialize_pem().as_bytes())?;
+    }
 
     Ok((cert_path, key_path))
 }

@@ -11,8 +11,10 @@ use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::Message;
 use tracing::warn;
 
+use crate::admission;
 use crate::session;
 use crate::state::Shared;
+use crate::ws_policy::{origin_allowed, subprotocol_acceptable};
 
 /// Run IRC session over an already-accepted WebSocket (plain or after TLS).
 pub async fn handle_websocket<S>(stream: S, peer: SocketAddr, shared: Arc<Mutex<Shared>>, secure: bool) -> Result<()>
@@ -93,7 +95,7 @@ where
     });
 
     let (reader, writer) = tokio::io::split(server);
-    let result = session::handle_client(reader, writer, peer, shared, secure, false).await;
+    let result = session::handle_client(reader, writer, peer, shared, secure, true).await;
     inbound.abort();
     outbound.abort();
     result
@@ -103,8 +105,14 @@ pub async fn accept_plain_ws(listener: tokio::net::TcpListener, shared: Arc<Mute
     loop {
         let (socket, peer) = listener.accept().await?;
         let shared = Arc::clone(&shared);
+        // Admit before WS upgrade work (H-09/H-12).
+        if let Err(reason) = admission::admit_early(&shared, peer).await {
+            warn!(%peer, %reason, "ws pre-admit rejected");
+            continue;
+        }
         tokio::spawn(async move {
-            if let Err(e) = handle_websocket(socket, peer, shared, false).await {
+            let result = handle_websocket(socket, peer, Arc::clone(&shared), false).await;
+            if let Err(e) = result {
                 warn!(%peer, error = %e, "websocket client session ended");
             }
         });
@@ -120,15 +128,56 @@ pub async fn accept_tls_ws(
         let (socket, peer) = listener.accept().await?;
         let shared = Arc::clone(&shared);
         let acceptor = acceptor.clone();
+        if let Err(reason) = admission::admit_early(&shared, peer).await {
+            warn!(%peer, %reason, "wss pre-admit rejected");
+            continue;
+        }
         tokio::spawn(async move {
             match acceptor.accept(socket).await {
                 Ok(tls) => {
-                    if let Err(e) = handle_websocket(tls, peer, shared, true).await {
+                    if let Err(e) = handle_websocket(tls, peer, Arc::clone(&shared), true).await {
                         warn!(%peer, error = %e, "wss client session ended");
                     }
                 }
-                Err(e) => warn!(%peer, error = %e, "wss handshake failed"),
+                Err(e) => {
+                    shared.lock().await.release(peer);
+                    warn!(%peer, error = %e, "wss handshake failed");
+                }
             }
         });
+    }
+}
+
+
+/// Evaluate Origin + subprotocol policy from config (unit-testable entry for acceptors).
+pub fn evaluate_ws_handshake(
+    origin: Option<&str>,
+    offered_protocols: &[String],
+    cfg: &crate::config::WebSocketSection,
+) -> Result<(), &'static str> {
+    if !origin_allowed(origin, &cfg.allowed_origins, cfg.allow_missing_origin) {
+        return Err("origin not allowed");
+    }
+    if !subprotocol_acceptable(offered_protocols, cfg.require_irc_subprotocol) {
+        return Err("irc subprotocol required");
+    }
+    Ok(())
+}
+
+
+#[cfg(test)]
+mod eval_tests {
+    use super::*;
+    use crate::config::WebSocketSection;
+
+    #[test]
+    fn evaluate_ws_handshake_respects_policy() {
+        let mut cfg = WebSocketSection::default();
+        cfg.allowed_origins = vec!["https://ok.test".into()];
+        cfg.allow_missing_origin = true;
+        cfg.require_irc_subprotocol = true;
+        assert!(evaluate_ws_handshake(None, &["irc".into()], &cfg).is_ok());
+        assert!(evaluate_ws_handshake(Some("https://evil"), &["irc".into()], &cfg).is_err());
+        assert!(evaluate_ws_handshake(None, &["chat".into()], &cfg).is_err());
     }
 }

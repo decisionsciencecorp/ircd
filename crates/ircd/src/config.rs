@@ -22,6 +22,8 @@ pub struct Config {
     pub limits: LimitsSection,
     #[serde(default)]
     pub security: SecuritySection,
+    #[serde(default)]
+    pub websocket: WebSocketSection,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -101,6 +103,33 @@ impl Default for LimitsSection {
     }
 }
 
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct WebSocketSection {
+    /// Exact Origin values allowed for browser clients. Empty = deny all Origins.
+    #[serde(default)]
+    pub allowed_origins: Vec<String>,
+    /// Allow handshakes with no Origin header (native clients).
+    #[serde(default = "default_true_ws")]
+    pub allow_missing_origin: bool,
+    /// Require `Sec-WebSocket-Protocol: irc`.
+    #[serde(default = "default_true_ws")]
+    pub require_irc_subprotocol: bool,
+}
+
+fn default_true_ws() -> bool {
+    true
+}
+
+impl Default for WebSocketSection {
+    fn default() -> Self {
+        Self {
+            allowed_origins: Vec::new(),
+            allow_missing_origin: true,
+            require_irc_subprotocol: true,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct SecuritySection {
@@ -271,6 +300,7 @@ impl Default for Config {
             accounts: Vec::new(),
             limits: LimitsSection::default(),
             security: SecuritySection::default(),
+            websocket: WebSocketSection::default(),
         }
     }
 }

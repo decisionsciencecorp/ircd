@@ -7,6 +7,8 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
+
+use crate::fs_perms::{ensure_private_dir, ensure_private_file};
 use ircd_core::tags::unix_ms_to_rfc3339;
 use rusqlite::{params, Connection};
 
@@ -54,10 +56,22 @@ impl HistoryStore {
         max_total_rows: usize,
     ) -> Result<Self> {
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("mkdir {}", parent.display()))?;
+            ensure_private_dir(parent)?;
+        }
+        // Fail closed if an existing DB is group/world-readable; sqlite may create 0644, so
+        // tighten after open rather than rejecting a fresh file.
+        if path.exists() {
+            ensure_private_file(path)?;
         }
         let db = Connection::open(path).with_context(|| format!("open {}", path.display()))?;
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let meta = std::fs::metadata(path).with_context(|| format!("stat {}", path.display()))?;
+            let mut perms = meta.permissions();
+            perms.set_mode(0o600);
+            std::fs::set_permissions(path, perms)
+                .with_context(|| format!("chmod 0600 {}", path.display()))?;
+        }
         db.execute_batch(
             "PRAGMA journal_mode=WAL;
              PRAGMA synchronous=NORMAL;
