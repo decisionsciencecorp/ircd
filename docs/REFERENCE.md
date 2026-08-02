@@ -23,8 +23,24 @@ See Tasks [Doc #972](https://tasks.decisionsciencecorp.com/admin/doc.php?id=972)
 
 ## v0 server goals (draft)
 
-1. Single-node TCP (+ TLS later) IRCd.
+1. Single-node TCP + TLS IRCd.
 2. NICK/USER/CAP registration, JOIN/PART/PRIVMSG, basic modes.
 3. IRCv3 capability negotiation path (grow toward message-tags / server-time / CHATHISTORY).
 4. Config shape familiar to Unreal admins where it does not fight Rust structure.
 5. Clean handoff to Tauri/web + Swift clients on the Mark × Cody board (Tasks project 48).
+
+## Config mapping (Unreal concepts → dsc-ircd TOML)
+
+We use **TOML** (`config.example.toml`), not Unreal’s block language. Knobs map roughly:
+
+| Unreal idea | dsc-ircd |
+|-------------|---------|
+| `me { name … }` | `[server] name` |
+| MOTD file / `motd` | `[server] motd` (inline string; multi-line OK) |
+| Admin block | `[server] admin_name`, `admin_email` |
+| Nick length / channel length limits | `[server] max_nick_length`, `max_channel_length` |
+| `listen { ip; port; }` | `[[listen]] bind = "ip:port"` |
+| `listen { … options { tls; } }` + cert files | `[[listen]] tls = true` + `cert` / `key` |
+| `oper { }` | `[oper]` stub (`enabled`, `name`, `password`) — auth not wired yet |
+
+CLI `--bind` / `--tls-bind` replace the listen list when present (handy for lab). Prefer `--config` for standing instances.

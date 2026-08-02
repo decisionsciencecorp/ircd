@@ -10,7 +10,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Mutex;
 use tracing::info;
 
-use crate::{BusMsg, Shared, SERVER_NAME, VERSION};
+use crate::{BusMsg, Shared, VERSION};
 
 /// Starter IRCv3 caps (advertise even when payload is still thin).
 const SUPPORTED_CAPS: &[&str] = &[
@@ -30,12 +30,13 @@ where
     R: tokio::io::AsyncRead + Unpin,
     W: tokio::io::AsyncWrite + Unpin,
 {
-    let conn_id = {
+    let (conn_id, cfg) = {
         let mut g = shared.lock().await;
         let id = g.next_id;
         g.next_id += 1;
-        id
+        (id, Arc::clone(&g.config))
     };
+    let server_name = cfg.server.name.as_str();
 
     let mut reader = BufReader::new(reader);
     let mut bus_rx = shared.lock().await.bus.subscribe();
@@ -43,19 +44,19 @@ where
     writer
         .write_all(
             server_notice(
-                SERVER_NAME,
+                server_name,
                 &format!("*** dsc-ircd {VERSION} — Unreal-inspired clean-room Rust IRCd"),
             )
             .as_bytes(),
         )
         .await?;
     writer
-        .write_all(server_notice(SERVER_NAME, "*** Looking up your hostname...").as_bytes())
+        .write_all(server_notice(server_name, "*** Looking up your hostname...").as_bytes())
         .await?;
     writer
         .write_all(
             server_notice(
-                SERVER_NAME,
+                server_name,
                 &format!("*** Connected as peer {peer}; hostname checks deferred in v0"),
             )
             .as_bytes(),
@@ -99,6 +100,7 @@ where
                 if msg.command_eq("CAP") {
                     handle_cap(
                         &mut writer,
+                        server_name,
                         &msg,
                         nick.as_deref(),
                         &mut cap_negotiating,
@@ -107,6 +109,8 @@ where
                     if msg.params.first().map(|s| s.eq_ignore_ascii_case("END")).unwrap_or(false) {
                         try_register(
                             &mut writer,
+                            server_name,
+                            &cfg.server.motd,
                             &mut registered,
                             nick.as_deref(),
                             user.as_deref(),
@@ -120,10 +124,11 @@ where
                 if msg.command_eq("NICK") {
                     let Some(desired) = msg.params.first().cloned() else { continue };
                     if desired.is_empty()
+                        || desired.len() > cfg.server.max_nick_length
                         || desired.contains(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-')
                     {
                         writer.write_all(
-                            numeric(SERVER_NAME, 432, nick.as_deref().unwrap_or("*"), &["Erroneous Nickname"]).as_bytes(),
+                            numeric(server_name, 432, nick.as_deref().unwrap_or("*"), &["Erroneous Nickname"]).as_bytes(),
                         ).await?;
                         continue;
                     }
@@ -132,7 +137,7 @@ where
                         if let Some(other) = g.nicks.get(&desired) {
                             if *other != conn_id {
                                 writer.write_all(
-                                    numeric(SERVER_NAME, 433, nick.as_deref().unwrap_or("*"), &[desired.as_str(), "Nickname is already in use"]).as_bytes(),
+                                    numeric(server_name, 433, nick.as_deref().unwrap_or("*"), &[desired.as_str(), "Nickname is already in use"]).as_bytes(),
                                 ).await?;
                                 continue;
                             }
@@ -145,6 +150,8 @@ where
                     nick = Some(desired);
                     try_register(
                         &mut writer,
+                        server_name,
+                        &cfg.server.motd,
                         &mut registered,
                         nick.as_deref(),
                         user.as_deref(),
@@ -159,6 +166,8 @@ where
                     realname = msg.params.get(3).cloned().or_else(|| msg.params.last().cloned());
                     try_register(
                         &mut writer,
+                        server_name,
+                        &cfg.server.motd,
                         &mut registered,
                         nick.as_deref(),
                         user.as_deref(),
@@ -169,7 +178,7 @@ where
                 }
 
                 if msg.command_eq("PING") {
-                    let token = msg.params.first().map(String::as_str).unwrap_or(SERVER_NAME);
+                    let token = msg.params.first().map(String::as_str).unwrap_or(server_name);
                     writer.write_all(format!("PONG :{token}\r\n").as_bytes()).await?;
                     continue;
                 }
@@ -180,7 +189,7 @@ where
 
                 if !registered {
                     writer.write_all(
-                        numeric(SERVER_NAME, 451, nick.as_deref().unwrap_or("*"), &["You have not registered"]).as_bytes(),
+                        numeric(server_name, 451, nick.as_deref().unwrap_or("*"), &["You have not registered"]).as_bytes(),
                     ).await?;
                     continue;
                 }
@@ -194,7 +203,9 @@ where
                     let Some(chan_list) = msg.params.first() else { continue };
                     for chan in chan_list.split(',') {
                         let chan = chan.trim();
-                        if !chan.starts_with('#') {
+                        if !chan.starts_with('#')
+                            || chan.len() > cfg.server.max_channel_length
+                        {
                             continue;
                         }
                         let names_list = {
@@ -221,13 +232,13 @@ where
                             skip_conn: conn_id,
                         });
                         writer.write_all(
-                            numeric(SERVER_NAME, 332, nick_s, &[chan, "dsc-ircd v0 test channel"]).as_bytes(),
+                            numeric(server_name, 332, nick_s, &[chan, "dsc-ircd v0 test channel"]).as_bytes(),
                         ).await?;
                         writer.write_all(
-                            numeric(SERVER_NAME, 353, nick_s, &["=", chan, names_list.as_str()]).as_bytes(),
+                            numeric(server_name, 353, nick_s, &["=", chan, names_list.as_str()]).as_bytes(),
                         ).await?;
                         writer.write_all(
-                            numeric(SERVER_NAME, 366, nick_s, &[chan, "End of /NAMES list"]).as_bytes(),
+                            numeric(server_name, 366, nick_s, &[chan, "End of /NAMES list"]).as_bytes(),
                         ).await?;
                     }
                     continue;
@@ -239,7 +250,7 @@ where
                     };
                     if !target.starts_with('#') || !channels.contains(target) {
                         writer.write_all(
-                            numeric(SERVER_NAME, 404, nick_s, &[target.as_str(), "Cannot send to channel"]).as_bytes(),
+                            numeric(server_name, 404, nick_s, &[target.as_str(), "Cannot send to channel"]).as_bytes(),
                         ).await?;
                         continue;
                     }
@@ -296,6 +307,7 @@ where
 
 async fn handle_cap<W>(
     writer: &mut W,
+    server_name: &str,
     msg: &RawLine,
     nick: Option<&str>,
     cap_negotiating: &mut bool,
@@ -310,14 +322,14 @@ where
         *cap_negotiating = true;
         let list = SUPPORTED_CAPS.join(" ");
         writer
-            .write_all(format!(":{SERVER_NAME} CAP {nick_s} LS :{list}\r\n").as_bytes())
+            .write_all(format!(":{server_name} CAP {nick_s} LS :{list}\r\n").as_bytes())
             .await?;
         return Ok(());
     }
     if sub.eq_ignore_ascii_case("LIST") {
         let list = enabled_caps.iter().cloned().collect::<Vec<_>>().join(" ");
         writer
-            .write_all(format!(":{SERVER_NAME} CAP {nick_s} LIST :{list}\r\n").as_bytes())
+            .write_all(format!(":{server_name} CAP {nick_s} LIST :{list}\r\n").as_bytes())
             .await?;
         return Ok(());
     }
@@ -348,14 +360,14 @@ where
         if !ack.is_empty() {
             writer
                 .write_all(
-                    format!(":{SERVER_NAME} CAP {nick_s} ACK :{}\r\n", ack.join(" ")).as_bytes(),
+                    format!(":{server_name} CAP {nick_s} ACK :{}\r\n", ack.join(" ")).as_bytes(),
                 )
                 .await?;
         }
         if !nak.is_empty() {
             writer
                 .write_all(
-                    format!(":{SERVER_NAME} CAP {nick_s} NAK :{}\r\n", nak.join(" ")).as_bytes(),
+                    format!(":{server_name} CAP {nick_s} NAK :{}\r\n", nak.join(" ")).as_bytes(),
                 )
                 .await?;
         }
@@ -368,7 +380,7 @@ where
     writer
         .write_all(
             numeric(
-                SERVER_NAME,
+                server_name,
                 410,
                 nick_s,
                 &[sub, "Invalid CAP subcommand"],
@@ -414,6 +426,8 @@ fn tag_server_time(line: &str) -> String {
 
 async fn try_register<W>(
     writer: &mut W,
+    server_name: &str,
+    motd: &str,
     registered: &mut bool,
     nick: Option<&str>,
     user: Option<&str>,
@@ -436,7 +450,7 @@ where
     writer
         .write_all(
             numeric(
-                SERVER_NAME,
+                server_name,
                 1,
                 nick,
                 &[&format!("Welcome to the DSC Internet Relay Network {nick}")],
@@ -447,11 +461,11 @@ where
     writer
         .write_all(
             numeric(
-                SERVER_NAME,
+                server_name,
                 2,
                 nick,
                 &[&format!(
-                    "Your host is {SERVER_NAME}, running version dsc-ircd-{VERSION}"
+                    "Your host is {server_name}, running version dsc-ircd-{VERSION}"
                 )],
             )
             .as_bytes(),
@@ -460,7 +474,7 @@ where
     writer
         .write_all(
             numeric(
-                SERVER_NAME,
+                server_name,
                 3,
                 nick,
                 &["This server was created for the Mark × Cody IRC rebuild"],
@@ -471,16 +485,26 @@ where
     writer
         .write_all(
             numeric(
-                SERVER_NAME,
+                server_name,
                 4,
                 nick,
-                &[SERVER_NAME, &format!("dsc-ircd-{VERSION}"), "i", "nt"],
+                &[server_name, &format!("dsc-ircd-{VERSION}"), "i", "nt"],
             )
             .as_bytes(),
         )
         .await?;
+    let motd_start = format!("- {server_name} Message of the day -");
     writer
-        .write_all(numeric(SERVER_NAME, 376, nick, &["End of /MOTD command"]).as_bytes())
+        .write_all(numeric(server_name, 375, nick, &[motd_start.as_str()]).as_bytes())
+        .await?;
+    for line in motd.lines() {
+        let body = format!("- {line}");
+        writer
+            .write_all(numeric(server_name, 372, nick, &[body.as_str()]).as_bytes())
+            .await?;
+    }
+    writer
+        .write_all(numeric(server_name, 376, nick, &["End of /MOTD command"]).as_bytes())
         .await?;
     info!(%nick, "client registered");
     Ok(())

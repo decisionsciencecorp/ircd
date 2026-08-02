@@ -13,7 +13,7 @@ Bootstrap. Speaks enough IRC to accept a client, register a nick, and echo on a 
 ## Quick start
 
 ```bash
-# terminal A — plaintext lab
+# terminal A — plaintext lab (CLI) or --config ./config.example.toml
 cargo run -p ircd -- --bind 127.0.0.1:6667
 
 # terminal B — CLI smoke client (not a product GUI)

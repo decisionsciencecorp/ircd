@@ -1,0 +1,29 @@
+# dsc-ircd example config (TOML).
+# Unreal admins: see docs/REFERENCE.md § Config mapping.
+
+[server]
+name = "ircd.dsc.local"
+motd = "Welcome to dsc-ircd — Unreal-inspired clean-room Rust IRCd"
+admin_name = "Mark Hopkins"
+admin_email = "ops@example.com"
+max_nick_length = 30
+max_channel_length = 50
+
+# Plaintext lab listen (Unreal: listen { ip *; port 6667; })
+[[listen]]
+bind = "127.0.0.1:6667"
+tls = false
+
+# TLS listen (Unreal: listen { … options { tls; } })
+# Generate lab certs: cargo run -p ircd -- gen-cert --out ./certs
+[[listen]]
+bind = "127.0.0.1:6697"
+tls = true
+cert = "./certs/cert.pem"
+key = "./certs/key.pem"
+
+# Oper block stub — auth not enforced yet (ops modes task).
+[oper]
+enabled = false
+name = "admin"
+password = "change-me"
