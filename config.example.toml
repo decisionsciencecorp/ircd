@@ -22,6 +22,20 @@ tls = true
 cert = "./certs/cert.pem"
 key = "./certs/key.pem"
 
+# IRC-over-WebSocket (browser / Tauri). Text frames carry IRC lines.
+[[listen]]
+bind = "127.0.0.1:7667"
+websocket = true
+tls = false
+
+# WSS (TLS + WebSocket)
+# [[listen]]
+# bind = "127.0.0.1:7668"
+# websocket = true
+# tls = true
+# cert = "./certs/cert.pem"
+# key = "./certs/key.pem"
+
 # OPER (lab plaintext password — do not use on a public host).
 [oper]
 enabled = true

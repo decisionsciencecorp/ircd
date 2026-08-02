@@ -50,6 +50,9 @@ pub struct ListenSection {
     pub bind: String,
     #[serde(default)]
     pub tls: bool,
+    /// IRC-over-WebSocket (text frames) instead of raw TCP IRC.
+    #[serde(default)]
+    pub websocket: bool,
     pub cert: Option<PathBuf>,
     pub key: Option<PathBuf>,
 }
@@ -80,6 +83,7 @@ impl Default for Config {
             listen: vec![ListenSection {
                 bind: "127.0.0.1:6667".into(),
                 tls: false,
+                websocket: false,
                 cert: None,
                 key: None,
             }],

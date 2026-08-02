@@ -22,3 +22,7 @@ rustls-pemfile = "2"
 rcgen = "0.14"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
+tokio-tungstenite = "0.26"
+futures-util = "0.3"
+base64 = "0.22"
+rusqlite = { version = "0.32", features = ["bundled"] }

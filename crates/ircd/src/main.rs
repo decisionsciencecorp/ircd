@@ -6,6 +6,7 @@
 mod config;
 mod session;
 mod tls;
+mod ws;
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -123,6 +124,8 @@ struct CliOverlay {
     config_path: Option<PathBuf>,
     bind: Option<String>,
     tls_bind: Option<String>,
+    ws_bind: Option<String>,
+    wss_bind: Option<String>,
     tls_cert: Option<PathBuf>,
     tls_key: Option<PathBuf>,
 }
@@ -133,10 +136,12 @@ fn print_help() {
 dsc-ircd {VERSION}
 
 Usage:
-  ircd [--config FILE] [--bind HOST:PORT] [--tls-bind HOST:PORT --tls-cert FILE --tls-key FILE]
+  ircd [--config FILE] [--bind HOST:PORT] [--tls-bind HOST:PORT]
+       [--ws-bind HOST:PORT] [--wss-bind HOST:PORT]
+       [--tls-cert FILE --tls-key FILE]
   ircd gen-cert [--out DIR] [--cn NAME]
 
-CLI listen flags override/extend config file listens.
+CLI listen flags override config file listens when present.
 See config.example.toml and docs/REFERENCE.md."
     );
 }
@@ -174,6 +179,8 @@ fn parse_cli(argv: &[String]) -> Result<CliOverlay> {
         config_path: None,
         bind: None,
         tls_bind: None,
+        ws_bind: None,
+        wss_bind: None,
         tls_cert: None,
         tls_key: None,
     };
@@ -191,6 +198,14 @@ fn parse_cli(argv: &[String]) -> Result<CliOverlay> {
             "--tls-bind" => {
                 i += 1;
                 c.tls_bind = Some(argv.get(i).context("--tls-bind needs value")?.clone());
+            }
+            "--ws-bind" => {
+                i += 1;
+                c.ws_bind = Some(argv.get(i).context("--ws-bind needs value")?.clone());
+            }
+            "--wss-bind" => {
+                i += 1;
+                c.wss_bind = Some(argv.get(i).context("--wss-bind needs value")?.clone());
             }
             "--tls-cert" => {
                 i += 1;
@@ -218,6 +233,7 @@ fn merge_config(mut cfg: Config, cli: &CliOverlay) -> Result<Config> {
         listens.push(config::ListenSection {
             bind: bind.clone(),
             tls: false,
+            websocket: false,
             cert: None,
             key: None,
         });
@@ -226,6 +242,25 @@ fn merge_config(mut cfg: Config, cli: &CliOverlay) -> Result<Config> {
         listens.push(config::ListenSection {
             bind: bind.clone(),
             tls: true,
+            websocket: false,
+            cert: cli.tls_cert.clone(),
+            key: cli.tls_key.clone(),
+        });
+    }
+    if let Some(bind) = &cli.ws_bind {
+        listens.push(config::ListenSection {
+            bind: bind.clone(),
+            tls: false,
+            websocket: true,
+            cert: None,
+            key: None,
+        });
+    }
+    if let Some(bind) = &cli.wss_bind {
+        listens.push(config::ListenSection {
+            bind: bind.clone(),
+            tls: true,
+            websocket: true,
             cert: cli.tls_cert.clone(),
             key: cli.tls_key.clone(),
         });
@@ -275,21 +310,32 @@ async fn main() -> Result<()> {
     for listen in &cfg.listen {
         let addr = listen.bind.clone();
         let shared = Arc::clone(&shared);
-        if listen.tls {
-            let cert = listen.cert.clone().context("tls cert")?;
-            let key = listen.key.clone().context("tls key")?;
-            let acceptor = tls::load_acceptor(&cert, &key)?;
-            let listener = TcpListener::bind(&addr)
-                .await
-                .with_context(|| format!("bind tls {addr}"))?;
-            info!("TLS on {addr} (cert {})", cert.display());
-            joins.spawn(async move { accept_tls(listener, acceptor, shared).await });
-        } else {
-            let listener = TcpListener::bind(&addr)
-                .await
-                .with_context(|| format!("bind plaintext {addr}"))?;
-            info!("plaintext on {addr}");
-            joins.spawn(async move { accept_plaintext(listener, shared).await });
+        let listener = TcpListener::bind(&addr)
+            .await
+            .with_context(|| format!("bind {addr}"))?;
+        match (listen.websocket, listen.tls) {
+            (false, false) => {
+                info!("plaintext IRC on {addr}");
+                joins.spawn(async move { accept_plaintext(listener, shared).await });
+            }
+            (false, true) => {
+                let cert = listen.cert.clone().context("tls cert")?;
+                let key = listen.key.clone().context("tls key")?;
+                let acceptor = tls::load_acceptor(&cert, &key)?;
+                info!("TLS IRC on {addr} (cert {})", cert.display());
+                joins.spawn(async move { accept_tls(listener, acceptor, shared).await });
+            }
+            (true, false) => {
+                info!("WebSocket IRC on {addr}");
+                joins.spawn(async move { ws::accept_plain_ws(listener, shared).await });
+            }
+            (true, true) => {
+                let cert = listen.cert.clone().context("tls cert")?;
+                let key = listen.key.clone().context("tls key")?;
+                let acceptor = tls::load_acceptor(&cert, &key)?;
+                info!("WSS IRC on {addr} (cert {})", cert.display());
+                joins.spawn(async move { ws::accept_tls_ws(listener, acceptor, shared).await });
+            }
         }
     }
 
