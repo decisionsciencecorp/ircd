@@ -35,6 +35,23 @@ use tags::split_tags;
 ///
 /// Optional IRCv3 client/server tags are captured in [`RawLine::tags`] and are
 /// not part of [`RawLine::command`].
+
+/// True if `s` contains ASCII control characters (including NUL/CR/LF) that must
+/// never appear in nick, user, channel, or topic fields on the wire.
+pub fn field_has_control(s: &str) -> bool {
+    s.chars().any(|c| c.is_control())
+}
+
+/// Channel name shape used by dsc-ircd: leading `#`, length, no controls/spaces/commas.
+pub fn valid_channel_name(s: &str, max_len: usize) -> bool {
+    !s.is_empty()
+        && s.len() <= max_len
+        && s.starts_with('#')
+        && !field_has_control(s)
+        && !s.contains(' ')
+        && !s.contains(',')
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RawLine {
     /// Raw tag string (`k=v;k2=v2`) without the leading `@`, when present.
@@ -226,5 +243,27 @@ mod tests {
         let n = numeric("s", 1, "n", &["a", "b c"]);
         assert_eq!(n, ":s 001 n a :b c\r\n");
         assert_eq!(server_notice("s", "x"), ":s NOTICE * :x\r\n");
+    }
+}
+
+
+#[cfg(test)]
+mod field_validation_tests {
+    use super::{field_has_control, valid_channel_name};
+
+    #[test]
+    fn field_has_control_rejects_nul_and_crlf() {
+        assert!(field_has_control("a\0b"));
+        assert!(field_has_control("a\rb"));
+        assert!(field_has_control("a\nb"));
+        assert!(!field_has_control("alice"));
+    }
+
+    #[test]
+    fn valid_channel_name_rejects_controls_and_spaces() {
+        assert!(valid_channel_name("#lab", 64));
+        assert!(!valid_channel_name("lab", 64));
+        assert!(!valid_channel_name("#bad name", 64));
+        assert!(!valid_channel_name("#a\nb", 64));
     }
 }

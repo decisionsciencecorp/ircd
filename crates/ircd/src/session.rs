@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use ircd_core::tags::{adapt_bus_line, prepend_tag};
-use ircd_core::{numeric, server_notice, RawLine};
+use ircd_core::{numeric, server_notice, RawLine, field_has_control, valid_channel_name};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Mutex;
 use tracing::info;
@@ -318,8 +318,24 @@ where
                 }
 
                 if msg.command_eq("USER") {
-                    user = msg.params.first().cloned();
-                    realname = msg.params.get(3).cloned().or_else(|| msg.params.last().cloned());
+                    let Some(u) = msg.params.first().cloned() else { continue };
+                    if u.is_empty() || field_has_control(&u) || u.contains(' ') {
+                        writer.write_all(
+                            numeric(server_name, 461, nick.as_deref().unwrap_or("*"), &["USER", "Invalid username"]).as_bytes(),
+                        ).await?;
+                        continue;
+                    }
+                    let rn = msg.params.get(3).cloned().or_else(|| msg.params.last().cloned());
+                    if let Some(ref r) = rn {
+                        if field_has_control(r) {
+                            writer.write_all(
+                                numeric(server_name, 461, nick.as_deref().unwrap_or("*"), &["USER", "Invalid realname"]).as_bytes(),
+                            ).await?;
+                            continue;
+                        }
+                    }
+                    user = Some(u);
+                    realname = rn;
                     try_register(
                         &mut writer,
                         server_name,
@@ -413,9 +429,10 @@ where
                     let Some(chan_list) = msg.params.first() else { continue };
                     for chan in chan_list.split(',') {
                         let chan = chan.trim();
-                        if !chan.starts_with('#')
-                            || chan.len() > cfg.server.max_channel_length
-                        {
+                        if !valid_channel_name(chan, cfg.server.max_channel_length) {
+                            writer.write_all(
+                                numeric(server_name, 403, nick_s, &[chan, "No such channel"]).as_bytes(),
+                            ).await?;
                             continue;
                         }
                         let (names_list, topic, already) = {
@@ -591,6 +608,23 @@ where
 
                 if msg.command_eq("PART") {
                     let Some(chan) = msg.params.first() else { continue };
+                    if !channels.contains(chan) {
+                        writer.write_all(
+                            numeric(server_name, 442, nick_s, &[chan.as_str(), "You're not on that channel"]).as_bytes(),
+                        ).await?;
+                        continue;
+                    }
+                    let is_member = {
+                        let g = shared.lock().await;
+                        g.channels.get(chan.as_str()).map(|c| c.members.contains(&conn_id)).unwrap_or(false)
+                    };
+                    if !is_member {
+                        channels.remove(chan);
+                        writer.write_all(
+                            numeric(server_name, 442, nick_s, &[chan.as_str(), "You're not on that channel"]).as_bytes(),
+                        ).await?;
+                        continue;
+                    }
                     channels.remove(chan);
                     {
                         let mut g = shared.lock().await;
@@ -639,6 +673,12 @@ where
                         continue;
                     }
                     let new_topic = msg.params.get(1).cloned().unwrap_or_default();
+                    if field_has_control(&new_topic) {
+                        writer.write_all(
+                            numeric(server_name, 461, nick_s, &["TOPIC", "Invalid topic"]).as_bytes(),
+                        ).await?;
+                        continue;
+                    }
                     let allowed = {
                         let g = shared.lock().await;
                         match g.channels.get(chan.as_str()) {
