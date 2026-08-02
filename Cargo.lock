@@ -40,6 +40,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ircc"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ircd-core",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "ircd"
 version = "0.1.0"
 dependencies = [

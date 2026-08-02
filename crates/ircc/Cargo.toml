@@ -1,0 +1,19 @@
+[package]
+name = "ircc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "CLI smoke client for dsc-ircd (not a product GUI)"
+
+[[bin]]
+name = "ircc"
+path = "src/main.rs"
+
+[dependencies]
+ircd-core.workspace = true
+tokio.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

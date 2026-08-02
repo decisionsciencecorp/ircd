@@ -13,16 +13,14 @@ Bootstrap / early scaffold. Speaks enough IRC to accept a client, register a nic
 ## Quick start
 
 ```bash
+# terminal A — server
 cargo run -p ircd -- --bind 127.0.0.1:6667
+
+# terminal B — CLI smoke client (not a product GUI)
+cargo run -p ircc -- --host 127.0.0.1 --port 6667 --nick otto --join '#test' --msg 'hello' --quit
 ```
 
-Then, from any IRC client:
-
-```
-/server 127.0.0.1 6667
-/nick yournick
-/join #test
-```
+Interactive: omit `--quit` and type `/join #test`, `/msg #test hi`, or bare lines (PRIVMSG to joined channel).
 
 ## Workspace
 
