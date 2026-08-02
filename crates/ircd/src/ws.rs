@@ -7,6 +7,7 @@ use anyhow::Result;
 use futures_util::{SinkExt, StreamExt};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Mutex;
+use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::Message;
 use tracing::warn;
 
@@ -18,7 +19,11 @@ pub async fn handle_websocket<S>(stream: S, peer: SocketAddr, shared: Arc<Mutex<
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
-    let ws = tokio_tungstenite::accept_async(stream).await?;
+    let mut ws_cfg = WebSocketConfig::default();
+    // Bound hostile browser frames (H-02). Classic IRC line budget is smaller; allow tagged headroom.
+    ws_cfg.max_message_size = Some(64 * 1024);
+    ws_cfg.max_frame_size = Some(64 * 1024);
+    let ws = tokio_tungstenite::accept_async_with_config(stream, Some(ws_cfg)).await?;
     let (mut sink, mut ws_stream) = ws.split();
     let (client, server) = tokio::io::duplex(64 * 1024);
     let (duplex_r, mut duplex_w) = tokio::io::split(client);
@@ -28,10 +33,16 @@ where
         while let Some(item) = ws_stream.next().await {
             match item {
                 Ok(Message::Text(text)) => {
+                    if text.len() > 64 * 1024 {
+                        return;
+                    }
                     for part in text.split('\n') {
                         let line = part.trim_end_matches('\r');
                         if line.is_empty() {
                             continue;
+                        }
+                        if line.len() > 8192 {
+                            return;
                         }
                         let mut out = line.to_string();
                         out.push_str("\r\n");

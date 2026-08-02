@@ -38,6 +38,9 @@ pub struct LimitsSection {
     pub flood_lines_per_window: u32,
     #[serde(default = "default_flood_window")]
     pub flood_window_secs: u64,
+    /// Max IRC line octets including CR/LF (disconnect if exceeded). Default 8192 (IRCv3-tagged budget).
+    #[serde(default = "default_max_line_bytes")]
+    pub max_line_bytes: usize,
 }
 
 fn default_max_clients() -> usize {
@@ -52,6 +55,9 @@ fn default_flood_lines() -> u32 {
 fn default_flood_window() -> u64 {
     10
 }
+fn default_max_line_bytes() -> usize {
+    8192
+}
 
 impl Default for LimitsSection {
     fn default() -> Self {
@@ -60,6 +66,7 @@ impl Default for LimitsSection {
             max_clients_per_ip: default_max_per_ip(),
             flood_lines_per_window: default_flood_lines(),
             flood_window_secs: default_flood_window(),
+            max_line_bytes: default_max_line_bytes(),
         }
     }
 }

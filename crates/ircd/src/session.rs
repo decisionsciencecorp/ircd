@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use ircd_core::tags::{adapt_bus_line, prepend_tag};
 use ircd_core::{numeric, server_notice, RawLine};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Mutex;
 use tracing::info;
 
@@ -73,7 +73,7 @@ enum SaslState {
 }
 
 pub async fn handle_client<R, W>(
-    reader: R,
+    mut reader: R,
     mut writer: W,
     peer: SocketAddr,
     shared: Arc<Mutex<Shared>>,
@@ -107,7 +107,7 @@ where
     let mut flood_count = 0u32;
     let mut flood_window_start = Instant::now();
 
-    let mut reader = BufReader::new(reader);
+    // Byte-at-a-time line assembly (cancellation-safe across read timeouts).
     let mut bus_rx = shared.lock().await.bus.subscribe();
 
     writer
@@ -139,7 +139,8 @@ where
     let mut is_oper = false;
     let mut cap_negotiating = false;
     let mut enabled_caps: HashSet<String> = HashSet::new();
-    let mut line_buf = String::new();
+    let mut line_buf: Vec<u8> = Vec::with_capacity(256);
+    let max_line = cfg.limits.max_line_bytes.max(64);
     let mut channels: HashSet<String> = HashSet::new();
     let mut account: Option<String> = None;
     let mut sasl_state = SaslState::Idle;
@@ -173,18 +174,31 @@ where
             }
         }
 
-        line_buf.clear();
-        let read = tokio::time::timeout(Duration::from_millis(50), reader.read_line(&mut line_buf))
-            .await;
-        let n = match read {
-            Ok(Ok(n)) => n,
+        let read = tokio::time::timeout(Duration::from_millis(50), reader.read_u8()).await;
+        let b = match read {
+            Ok(Ok(b)) => b,
+            Ok(Err(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                break;
+            }
             Ok(Err(e)) => return Err(e.into()),
-            Err(_) => continue, // timed out — drain bus again
+            Err(_) => continue, // timed out — keep partial line_buf, drain bus
         };
-        if n == 0 {
+        if line_buf.len() >= max_line {
+            let _ = writer
+                .write_all(
+                    format!("ERROR :Closing Link: [{peer}] (Input line too long)\r\n").as_bytes(),
+                )
+                .await;
+                        let _ = writer.flush().await;
+            info!(%peer, max_line, "oversized IRC line; closing");
             break;
         }
-        let raw = std::mem::take(&mut line_buf);
+        line_buf.push(b);
+        if b != b'\n' {
+            continue;
+        }
+        let raw = String::from_utf8_lossy(&line_buf).into_owned();
+        line_buf.clear();
         // Simple recv flood guard (line count per window).
         if flood_window_start.elapsed() >= flood_window {
             flood_window_start = Instant::now();

@@ -186,3 +186,32 @@ async fn nick_change_does_not_transfer_ops_to_stolen_nick() {
     })
     .await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn oversized_line_disconnects() {
+    use ircd::config::Config;
+    use ircd::state::Shared;
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+    let mut cfg = Config::default();
+    cfg.limits.max_line_bytes = 64;
+    cfg.limits.max_clients = 64;
+    cfg.limits.max_clients_per_ip = 64;
+    cfg.limits.flood_lines_per_window = 500;
+    cfg.server.name = "cov.test".into();
+    let shared = Arc::new(Mutex::new(Shared::new(Arc::new(cfg), None)));
+    with_client(shared, 9, |mut w, mut r| async move {
+        let _ = read_until(&mut r, |l| l.len() >= 3).await;
+        let huge = "A".repeat(80);
+        w.write_all(format!("{huge}\r\n").as_bytes()).await.unwrap();
+        let lines = read_until(&mut r, |l| {
+            l.iter().any(|x| x.contains("too long") || x.contains("ERROR"))
+        })
+        .await;
+        assert!(
+            lines.iter().any(|l| l.contains("too long") || l.contains("ERROR")),
+            "{lines:?}"
+        );
+    })
+    .await;
+}

@@ -34,6 +34,7 @@ pub fn base_cfg(hist: Option<std::path::PathBuf>) -> Config {
         max_clients_per_ip: 64,
         flood_lines_per_window: 500,
         flood_window_secs: 30,
+        max_line_bytes: 8192,
     };
     c.accounts = vec![AccountSection {
         name: "alice".into(),
