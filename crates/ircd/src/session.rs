@@ -96,10 +96,11 @@ where
         g.next_id += 1;
         (id, Arc::clone(&g.config))
     };
-    // Decrement connection counters when this session ends (including Err paths).
+    // Admission counters + nick/channel membership cleanup on *all* exits (H-03).
     let _conn_guard = ConnRelease {
         shared: Arc::clone(&shared),
         peer,
+        conn_id,
     };
     let server_name = cfg.server.name.as_str();
     let flood_limit = cfg.limits.flood_lines_per_window;
@@ -862,18 +863,40 @@ where
     Ok(())
 }
 
-/// Releases `[limits]` admission counters when the session task ends.
+/// Releases admission counters and clears this connection's nick/channel state (H-03).
+/// Idempotent with the happy-path cleanup at the end of `handle_client`.
 struct ConnRelease {
     shared: Arc<Mutex<Shared>>,
     peer: SocketAddr,
+    conn_id: u64,
 }
 
 impl Drop for ConnRelease {
     fn drop(&mut self) {
         let shared = Arc::clone(&self.shared);
         let peer = self.peer;
+        let conn_id = self.conn_id;
         tokio::spawn(async move {
-            shared.lock().await.release(peer);
+            let mut g = shared.lock().await;
+            g.release(peer);
+            if let Some(nick) = g.id_to_nick.remove(&conn_id) {
+                g.nicks.remove(&nick);
+            }
+            let affected: Vec<String> = g
+                .channels
+                .iter()
+                .filter(|(_, ch)| ch.members.contains(&conn_id))
+                .map(|(name, _)| name.clone())
+                .collect();
+            for chan in affected {
+                if let Some(ch) = g.channels.get_mut(&chan) {
+                    ch.remove_member(conn_id);
+                    let empty = ch.members.is_empty();
+                    if empty {
+                        g.channels.remove(&chan);
+                    }
+                }
+            }
         });
     }
 }

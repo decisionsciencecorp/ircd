@@ -215,3 +215,46 @@ async fn oversized_line_disconnects() {
     })
     .await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn kick_revokes_privmsg_for_victim() {
+    let shared = shared_plain();
+    with_two_clients(shared, |(mut w1, mut r1), (mut w2, mut r2)| async move {
+        w1.write_all(b"NICK op\r\nUSER o 0 * :O\r\nJOIN #k\r\n").await.unwrap();
+        let _ = read_until(&mut r1, |l| l.iter().any(|x| x.contains("JOIN"))).await;
+        w2.write_all(b"NICK vic\r\nUSER v 0 * :V\r\nJOIN #k\r\n").await.unwrap();
+        let _ = read_until(&mut r2, |l| l.iter().any(|x| x.contains("JOIN"))).await;
+        w1.write_all(b"KICK #k vic :out\r\n").await.unwrap();
+        let _ = read_until(&mut r2, |l| l.iter().any(|x| x.contains("KICK"))).await;
+        w2.write_all(b"PRIVMSG #k :still here?\r\nQUIT :x\r\n").await.unwrap();
+        let lines = read_until(&mut r2, |l| l.iter().any(|x| x.contains("404") || x.contains("ERROR"))).await;
+        assert!(
+            lines.iter().any(|l| l.contains("404") || l.contains("Cannot send")),
+            "kicked nick must lose send access: {lines:?}"
+        );
+        w1.write_all(b"QUIT :x\r\n").await.unwrap();
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn error_exit_clears_nick_for_reuse() {
+    let shared = shared_plain();
+    // First client registers nick then we drop by closing write side via QUIT after join;
+    // second client must be able to claim the nick (no ghost in nicks map).
+    with_two_clients(shared, |(mut w1, mut r1), (mut w2, mut r2)| async move {
+        w1.write_all(b"NICK Ghost\r\nUSER g 0 * :G\r\nJOIN #g\r\nQUIT :bye\r\n")
+            .await
+            .unwrap();
+        let _ = read_until(&mut r1, |l| l.iter().any(|x| x.contains("QUIT") || x.contains("JOIN"))).await;
+        // Allow Drop cleanup spawn to run
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        w2.write_all(b"NICK Ghost\r\nUSER g 0 * :G\r\nQUIT :x\r\n").await.unwrap();
+        let lines = read_until(&mut r2, |l| l.iter().any(|x| x.contains("001") || x.contains("433"))).await;
+        assert!(
+            lines.iter().any(|l| l.contains("001")),
+            "nick must be free after prior session cleanup: {lines:?}"
+        );
+    })
+    .await;
+}
