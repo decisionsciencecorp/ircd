@@ -5,3 +5,5 @@
 .env
 .env.*
 .otto-githooks-installed
+/certs/
+*.pem

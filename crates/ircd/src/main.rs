@@ -3,14 +3,15 @@
 //! Enough protocol for a client to register, join `#test`, and chat.
 //! Feature growth tracks UnrealIRCd as the ops/reference model (clean-room).
 
+mod session;
+mod tls;
+
 use std::collections::{HashMap, HashSet};
-use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
-use ircd_core::{numeric, server_notice, RawLine};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::{TcpListener, TcpStream};
+use anyhow::{bail, Context, Result};
+use tokio::net::TcpListener;
 use tokio::sync::{broadcast, Mutex};
 use tracing::{info, warn};
 
@@ -47,8 +48,105 @@ impl Shared {
     }
 }
 
+struct RunArgs {
+    bind: Option<String>,
+    tls_bind: Option<String>,
+    tls_cert: Option<PathBuf>,
+    tls_key: Option<PathBuf>,
+}
+
+fn print_help() {
+    println!(
+        "\
+dsc-ircd {VERSION}
+
+Usage:
+  ircd [--bind HOST:PORT] [--tls-bind HOST:PORT --tls-cert FILE --tls-key FILE]
+  ircd gen-cert [--out DIR] [--cn NAME]
+
+Defaults: plaintext 127.0.0.1:6667 when no bind flags are given.
+TLS lab: generate certs, then pass --tls-bind 127.0.0.1:6697 with cert/key."
+    );
+}
+
+fn run_gen_cert(argv: &[String]) -> Result<()> {
+    let mut out = PathBuf::from("./certs");
+    let mut cn = SERVER_NAME.to_string();
+    let mut i = 0;
+    while i < argv.len() {
+        match argv[i].as_str() {
+            "--out" => {
+                i += 1;
+                out = PathBuf::from(argv.get(i).context("--out needs value")?);
+            }
+            "--cn" => {
+                i += 1;
+                cn = argv.get(i).context("--cn needs value")?.clone();
+            }
+            "-h" | "--help" => {
+                print_help();
+                std::process::exit(0);
+            }
+            other => bail!("unknown gen-cert arg {other}"),
+        }
+        i += 1;
+    }
+    let (cert, key) = tls::gen_self_signed(&out, &cn)?;
+    println!("wrote {}", cert.display());
+    println!("wrote {}", key.display());
+    println!(
+        "example: cargo run -p ircd -- --bind 127.0.0.1:6667 --tls-bind 127.0.0.1:6697 --tls-cert {} --tls-key {}",
+        cert.display(),
+        key.display()
+    );
+    Ok(())
+}
+
+fn parse_run_args(argv: &[String]) -> Result<RunArgs> {
+    let mut bind = None;
+    let mut tls_bind = None;
+    let mut tls_cert = None;
+    let mut tls_key = None;
+    let mut i = 0;
+    while i < argv.len() {
+        match argv[i].as_str() {
+            "--bind" => {
+                i += 1;
+                bind = Some(argv.get(i).context("--bind needs value")?.clone());
+            }
+            "--tls-bind" => {
+                i += 1;
+                tls_bind = Some(argv.get(i).context("--tls-bind needs value")?.clone());
+            }
+            "--tls-cert" => {
+                i += 1;
+                tls_cert = Some(PathBuf::from(argv.get(i).context("--tls-cert needs value")?));
+            }
+            "--tls-key" => {
+                i += 1;
+                tls_key = Some(PathBuf::from(argv.get(i).context("--tls-key needs value")?));
+            }
+            "-h" | "--help" => {
+                print_help();
+                std::process::exit(0);
+            }
+            other => bail!("unknown arg {other}"),
+        }
+        i += 1;
+    }
+    Ok(RunArgs {
+        bind,
+        tls_bind,
+        tls_cert,
+        tls_key,
+    })
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
+    // rustls 0.23: pick an explicit provider when both ring and aws-lc-rs are in the graph.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -56,348 +154,95 @@ async fn main() -> Result<()> {
         )
         .init();
 
-    let bind = std::env::args()
-        .skip_while(|a| a != "--bind")
-        .nth(1)
-        .unwrap_or_else(|| "127.0.0.1:6667".to_string());
+    let argv: Vec<String> = std::env::args().skip(1).collect();
+    if argv.first().map(|s| s.as_str()) == Some("gen-cert") {
+        return run_gen_cert(&argv[1..]);
+    }
 
-    let listener = TcpListener::bind(&bind)
-        .await
-        .with_context(|| format!("bind {bind}"))?;
-    info!("dsc-ircd {VERSION} listening on {bind} (server name {SERVER_NAME})");
+    let args = parse_run_args(&argv)?;
+    let tls_bind = args.tls_bind.clone();
+    let bind = match (&args.bind, &tls_bind) {
+        (Some(b), _) => Some(b.clone()),
+        (None, None) => Some("127.0.0.1:6667".to_string()),
+        (None, Some(_)) => None, // TLS-only ok
+    };
+
+    if bind.is_none() && tls_bind.is_none() {
+        bail!("nothing to listen on; pass --bind and/or --tls-bind");
+    }
 
     let shared = Arc::new(Mutex::new(Shared::new()));
+    let mut joins = tokio::task::JoinSet::new();
 
+    if let Some(addr) = bind {
+        let listener = TcpListener::bind(&addr)
+            .await
+            .with_context(|| format!("bind plaintext {addr}"))?;
+        info!("dsc-ircd {VERSION} plaintext on {addr} (server name {SERVER_NAME})");
+        let shared = Arc::clone(&shared);
+        joins.spawn(async move { accept_plaintext(listener, shared).await });
+    }
+
+    if let Some(addr) = tls_bind {
+        let cert = args
+            .tls_cert
+            .clone()
+            .context("--tls-bind requires --tls-cert")?;
+        let key = args
+            .tls_key
+            .clone()
+            .context("--tls-bind requires --tls-key")?;
+        let acceptor = tls::load_acceptor(&cert, &key)?;
+        let listener = TcpListener::bind(&addr)
+            .await
+            .with_context(|| format!("bind tls {addr}"))?;
+        info!(
+            "dsc-ircd {VERSION} TLS on {addr} (cert {} key {})",
+            cert.display(),
+            key.display()
+        );
+        let shared = Arc::clone(&shared);
+        joins.spawn(async move { accept_tls(listener, acceptor, shared).await });
+    }
+
+    while let Some(res) = joins.join_next().await {
+        res.context("listener task join")??;
+    }
+    Ok(())
+}
+
+async fn accept_plaintext(listener: TcpListener, shared: Arc<Mutex<Shared>>) -> Result<()> {
     loop {
         let (socket, peer) = listener.accept().await?;
         let shared = Arc::clone(&shared);
         tokio::spawn(async move {
-            if let Err(e) = handle_client(socket, peer, shared).await {
-                warn!(%peer, error = %e, "client session ended");
+            let (reader, writer) = socket.into_split();
+            if let Err(e) = session::handle_client(reader, writer, peer, shared).await {
+                warn!(%peer, error = %e, "plaintext client session ended");
             }
         });
     }
 }
 
-async fn handle_client(
-    socket: TcpStream,
-    peer: SocketAddr,
+async fn accept_tls(
+    listener: TcpListener,
+    acceptor: tokio_rustls::TlsAcceptor,
     shared: Arc<Mutex<Shared>>,
 ) -> Result<()> {
-    let conn_id = {
-        let mut g = shared.lock().await;
-        let id = g.next_id;
-        g.next_id += 1;
-        id
-    };
-
-    let (reader, mut writer) = socket.into_split();
-    let mut reader = BufReader::new(reader);
-    let mut bus_rx = shared.lock().await.bus.subscribe();
-
-    writer
-        .write_all(
-            server_notice(
-                SERVER_NAME,
-                &format!("*** dsc-ircd {VERSION} — Unreal-inspired clean-room Rust IRCd"),
-            )
-            .as_bytes(),
-        )
-        .await?;
-    writer
-        .write_all(
-            server_notice(SERVER_NAME, "*** Looking up your hostname...").as_bytes(),
-        )
-        .await?;
-    writer
-        .write_all(
-            server_notice(
-                SERVER_NAME,
-                &format!("*** Connected as peer {peer}; hostname checks deferred in v0"),
-            )
-            .as_bytes(),
-        )
-        .await?;
-
-    let mut nick: Option<String> = None;
-    let mut user: Option<String> = None;
-    let mut realname: Option<String> = None;
-    let mut registered = false;
-    let mut line_buf = String::new();
-    let mut channels: HashSet<String> = HashSet::new();
-
     loop {
-        tokio::select! {
-            bus = bus_rx.recv() => {
-                match bus {
-                    Ok(msg) if msg.skip_conn != conn_id && channels.contains(&msg.target) => {
-                        writer.write_all(msg.line.as_bytes()).await?;
+        let (socket, peer) = listener.accept().await?;
+        let shared = Arc::clone(&shared);
+        let acceptor = acceptor.clone();
+        tokio::spawn(async move {
+            match acceptor.accept(socket).await {
+                Ok(tls_stream) => {
+                    let (reader, writer) = tokio::io::split(tls_stream);
+                    if let Err(e) = session::handle_client(reader, writer, peer, shared).await {
+                        warn!(%peer, error = %e, "tls client session ended");
                     }
-                    Ok(_) => {}
-                    Err(broadcast::error::RecvError::Lagged(_)) => {}
-                    Err(broadcast::error::RecvError::Closed) => break,
                 }
+                Err(e) => warn!(%peer, error = %e, "tls handshake failed"),
             }
-            read = reader.read_line(&mut line_buf) => {
-                let n = read?;
-                if n == 0 {
-                    break;
-                }
-                let raw = std::mem::take(&mut line_buf);
-                let Some(msg) = RawLine::parse(&raw) else { continue };
-
-                if msg.command_eq("CAP") {
-                    // Minimal CAP: NAK end so classic clients proceed.
-                    if msg.params.first().map(|s| s.eq_ignore_ascii_case("LS")).unwrap_or(false) {
-                        let nick_s = nick.as_deref().unwrap_or("*");
-                        writer.write_all(
-                            format!(":{SERVER_NAME} CAP {nick_s} LS :\r\n").as_bytes(),
-                        ).await?;
-                    } else if msg.params.first().map(|s| s.eq_ignore_ascii_case("END")).unwrap_or(false) {
-                        // ignore
-                    } else {
-                        let nick_s = nick.as_deref().unwrap_or("*");
-                        writer.write_all(
-                            format!(":{SERVER_NAME} CAP {nick_s} NAK :\r\n").as_bytes(),
-                        ).await?;
-                    }
-                    continue;
-                }
-
-                if msg.command_eq("NICK") {
-                    let Some(desired) = msg.params.first().cloned() else { continue };
-                    if desired.is_empty() || desired.contains(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-') {
-                        writer.write_all(
-                            numeric(SERVER_NAME, 432, nick.as_deref().unwrap_or("*"), &["Erroneous Nickname"]).as_bytes(),
-                        ).await?;
-                        continue;
-                    }
-                    {
-                        let mut g = shared.lock().await;
-                        if let Some(other) = g.nicks.get(&desired) {
-                            if *other != conn_id {
-                                writer.write_all(
-                                    numeric(SERVER_NAME, 433, nick.as_deref().unwrap_or("*"), &[desired.as_str(), "Nickname is already in use"]).as_bytes(),
-                                ).await?;
-                                continue;
-                            }
-                        }
-                        if let Some(old) = nick.take() {
-                            g.nicks.remove(&old);
-                        }
-                        g.nicks.insert(desired.clone(), conn_id);
-                    }
-                    nick = Some(desired);
-                    try_register(
-                        &mut writer,
-                        &mut registered,
-                        nick.as_deref(),
-                        user.as_deref(),
-                        realname.as_deref(),
-                    ).await?;
-                    continue;
-                }
-
-                if msg.command_eq("USER") {
-                    user = msg.params.first().cloned();
-                    realname = msg.params.get(3).cloned().or_else(|| msg.params.last().cloned());
-                    try_register(
-                        &mut writer,
-                        &mut registered,
-                        nick.as_deref(),
-                        user.as_deref(),
-                        realname.as_deref(),
-                    ).await?;
-                    continue;
-                }
-
-                if msg.command_eq("PING") {
-                    let token = msg.params.first().map(String::as_str).unwrap_or(SERVER_NAME);
-                    writer.write_all(format!("PONG :{token}\r\n").as_bytes()).await?;
-                    continue;
-                }
-
-                if msg.command_eq("QUIT") {
-                    break;
-                }
-
-                if !registered {
-                    writer.write_all(
-                        numeric(SERVER_NAME, 451, nick.as_deref().unwrap_or("*"), &["You have not registered"]).as_bytes(),
-                    ).await?;
-                    continue;
-                }
-
-                let nick_s = nick.as_deref().unwrap_or("*");
-                let user_s = user.as_deref().unwrap_or("user");
-                let host = "dsc.local";
-                let prefix = format!("{nick_s}!{user_s}@{host}");
-
-                if msg.command_eq("JOIN") {
-                    let Some(chan_list) = msg.params.first() else { continue };
-                    for chan in chan_list.split(',') {
-                        let chan = chan.trim();
-                        if !chan.starts_with('#') {
-                            continue;
-                        }
-                        {
-                            let mut g = shared.lock().await;
-                            g.channels.entry(chan.to_string()).or_default().insert(nick_s.to_string());
-                        }
-                        channels.insert(chan.to_string());
-                        let join_line = format!(":{prefix} JOIN :{chan}\r\n");
-                        writer.write_all(join_line.as_bytes()).await?;
-                        let _ = shared.lock().await.bus.send(BusMsg {
-                            target: chan.to_string(),
-                            line: join_line,
-                            skip_conn: conn_id,
-                        });
-                        writer.write_all(
-                            numeric(SERVER_NAME, 332, nick_s, &[chan, "dsc-ircd v0 test channel"]).as_bytes(),
-                        ).await?;
-                        writer.write_all(
-                            numeric(SERVER_NAME, 353, nick_s, &["=", chan, nick_s]).as_bytes(),
-                        ).await?;
-                        writer.write_all(
-                            numeric(SERVER_NAME, 366, nick_s, &[chan, "End of /NAMES list"]).as_bytes(),
-                        ).await?;
-                    }
-                    continue;
-                }
-
-                if msg.command_eq("PRIVMSG") {
-                    let (Some(target), Some(text)) = (msg.params.first(), msg.params.get(1)) else {
-                        continue;
-                    };
-                    if !target.starts_with('#') || !channels.contains(target) {
-                        writer.write_all(
-                            numeric(SERVER_NAME, 404, nick_s, &[target.as_str(), "Cannot send to channel"]).as_bytes(),
-                        ).await?;
-                        continue;
-                    }
-                    let line = format!(":{prefix} PRIVMSG {target} :{text}\r\n");
-                    let _ = shared.lock().await.bus.send(BusMsg {
-                        target: target.clone(),
-                        line,
-                        skip_conn: conn_id,
-                    });
-                    continue;
-                }
-
-                if msg.command_eq("PART") {
-                    let Some(chan) = msg.params.first() else { continue };
-                    channels.remove(chan);
-                    {
-                        let mut g = shared.lock().await;
-                        if let Some(members) = g.channels.get_mut(chan) {
-                            members.remove(nick_s);
-                        }
-                    }
-                    let line = format!(":{prefix} PART {chan}\r\n");
-                    writer.write_all(line.as_bytes()).await?;
-                    let _ = shared.lock().await.bus.send(BusMsg {
-                        target: chan.clone(),
-                        line,
-                        skip_conn: conn_id,
-                    });
-                    continue;
-                }
-
-                // Unknown command — soft ignore for v0 noise.
-            }
-        }
+        });
     }
-
-    // cleanup
-    if let Some(n) = nick {
-        let mut g = shared.lock().await;
-        g.nicks.remove(&n);
-        for chan in &channels {
-            if let Some(members) = g.channels.get_mut(chan) {
-                members.remove(&n);
-            }
-            let user_s = user.as_deref().unwrap_or("user");
-            let line = format!(":{n}!{user_s}@dsc.local QUIT :Connection closed\r\n");
-            let _ = g.bus.send(BusMsg {
-                target: chan.clone(),
-                line,
-                skip_conn: conn_id,
-            });
-        }
-    }
-
-    Ok(())
-}
-
-async fn try_register(
-    writer: &mut tokio::net::tcp::OwnedWriteHalf,
-    registered: &mut bool,
-    nick: Option<&str>,
-    user: Option<&str>,
-    _realname: Option<&str>,
-) -> Result<()> {
-    if *registered {
-        return Ok(());
-    }
-    let (Some(nick), Some(_user)) = (nick, user) else {
-        return Ok(());
-    };
-    *registered = true;
-    writer
-        .write_all(
-            numeric(
-                SERVER_NAME,
-                1,
-                nick,
-                &[&format!("Welcome to the DSC Internet Relay Network {nick}")],
-            )
-            .as_bytes(),
-        )
-        .await?;
-    writer
-        .write_all(
-            numeric(
-                SERVER_NAME,
-                2,
-                nick,
-                &[&format!("Your host is {SERVER_NAME}, running version dsc-ircd-{VERSION}")],
-            )
-            .as_bytes(),
-        )
-        .await?;
-    writer
-        .write_all(
-            numeric(
-                SERVER_NAME,
-                3,
-                nick,
-                &["This server was created for the Mark × Cody IRC rebuild"],
-            )
-            .as_bytes(),
-        )
-        .await?;
-    writer
-        .write_all(
-            numeric(
-                SERVER_NAME,
-                4,
-                nick,
-                &[SERVER_NAME, &format!("dsc-ircd-{VERSION}"), "i", "nt"],
-            )
-            .as_bytes(),
-        )
-        .await?;
-    writer
-        .write_all(
-            numeric(
-                SERVER_NAME,
-                376,
-                nick,
-                &["End of /MOTD command"],
-            )
-            .as_bytes(),
-        )
-        .await?;
-    info!(%nick, "client registered");
-    Ok(())
 }
