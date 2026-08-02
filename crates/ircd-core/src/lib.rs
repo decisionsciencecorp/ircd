@@ -26,10 +26,13 @@
 #![forbid(unsafe_code)]
 
 pub mod tags;
+pub mod casemap;
 
 use std::fmt;
 
 use tags::split_tags;
+
+pub use casemap::{ascii_casefold, ChannelKey, ChannelName, Nick, NickKey};
 
 /// IRC message line without trailing CR/LF.
 ///

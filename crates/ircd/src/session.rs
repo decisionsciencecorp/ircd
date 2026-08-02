@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use ircd_core::tags::{adapt_bus_line, prepend_tag};
-use ircd_core::{numeric, server_notice, RawLine, field_has_control, valid_channel_name};
+use ircd_core::{ascii_casefold, field_has_control, numeric, server_notice, valid_channel_name, Nick, RawLine};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Mutex;
 use tracing::info;
@@ -17,7 +17,7 @@ use crate::VERSION;
 
 /// Caps advertised without per-cap conformance tests must stay empty (A1 / Doc #974).
 /// SASL is added conditionally in `advertised_caps` when accounts exist.
-const BASE_CAPS: &[&str] = &[];
+const BASE_CAPS: &[&str] = &["cap-notify"];
 
 fn advertised_caps(has_accounts: bool) -> Vec<String> {
     let mut caps: Vec<String> = BASE_CAPS.iter().map(|s| (*s).to_string()).collect();
@@ -39,25 +39,48 @@ fn apply_cap_req(
     advertised: &[String],
     enabled_caps: &mut HashSet<String>,
 ) -> (Vec<String>, Vec<String>) {
-    let mut ack = Vec::new();
-    let mut nak = Vec::new();
-    for tok in req.split_whitespace() {
+    let tokens: Vec<&str> = req.split_whitespace().collect();
+    if tokens.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+    // Atomic: any unknown or forbidden disable → NAK entire REQ, no mutations.
+    let mut nak_all = false;
+    for tok in &tokens {
         let disable = tok.starts_with('-');
         let name = tok.trim_start_matches('-');
-        let known = advertised.iter().any(|c| cap_name_matches(name, c));
-        if !known {
-            nak.push(tok.to_string());
-            continue;
+        let canon = name.split('=').next().unwrap_or(name);
+        if disable && canon.eq_ignore_ascii_case("cap-notify") {
+            nak_all = true;
+            break;
         }
+        let known = advertised.iter().any(|c| cap_name_matches(name, c))
+            || canon.eq_ignore_ascii_case("cap-notify");
+        if !known {
+            nak_all = true;
+            break;
+        }
+    }
+    if nak_all {
+        return (
+            Vec::new(),
+            tokens.iter().map(|t| (*t).to_string()).collect(),
+        );
+    }
+    let mut ack = Vec::new();
+    for tok in &tokens {
+        let disable = tok.starts_with('-');
+        let name = tok.trim_start_matches('-');
         let canon = name.split('=').next().unwrap_or(name).to_string();
         if disable {
-            enabled_caps.retain(|c| !cap_name_matches(c, &canon));
+            if !canon.eq_ignore_ascii_case("cap-notify") {
+                enabled_caps.retain(|c| !cap_name_matches(c, &canon));
+            }
         } else {
             enabled_caps.insert(canon);
         }
-        ack.push(tok.to_string());
+        ack.push((*tok).to_string());
     }
-    (ack, nak)
+    (ack, Vec::new())
 }
 
 fn has_cap(enabled: &HashSet<String>, name: &str) -> bool {
@@ -147,7 +170,7 @@ where
     let mut registered = false;
     let mut is_oper = false;
     let mut cap_negotiating = false;
-    let mut enabled_caps: HashSet<String> = HashSet::new();
+    let mut enabled_caps: HashSet<String> = HashSet::from(["cap-notify".to_string()]);
     let mut line_buf: Vec<u8> = Vec::with_capacity(256);
     let max_line = cfg.limits.max_line_bytes.max(64);
     let mut channels: HashSet<String> = HashSet::new();
@@ -269,6 +292,8 @@ where
                             user.as_deref(),
                             realname.as_deref(),
                             cap_negotiating,
+                            cfg.server.max_nick_length,
+                            cfg.server.max_channel_length,
                         ).await?;
                     }
                     continue;
@@ -305,35 +330,39 @@ where
                 }
 
                 if msg.command_eq("NICK") {
-                    let Some(desired) = msg.params.first().cloned() else { continue };
-                    if desired.is_empty()
-                        || desired.len() > cfg.server.max_nick_length
-                        || desired.contains(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-')
-                    {
+                    let Some(desired_raw) = msg.params.first().cloned() else {
+                        writer.write_all(
+                            numeric(server_name, 431, nick.as_deref().unwrap_or("*"), &["No nickname given"]).as_bytes(),
+                        ).await?;
+                        continue;
+                    };
+                    let Ok(parsed) = Nick::parse(&desired_raw, cfg.server.max_nick_length) else {
                         writer.write_all(
                             numeric(server_name, 432, nick.as_deref().unwrap_or("*"), &["Erroneous Nickname"]).as_bytes(),
                         ).await?;
                         continue;
-                    }
+                    };
+                    let desired = parsed.as_str().to_string();
+                    let desired_key = parsed.key().as_str().to_string();
                     let old_nick = nick.clone();
                     let nick_taken = {
                         let mut g = shared.lock().await;
-                        if let Some(other) = g.nicks.get(&desired) {
+                        if let Some(other) = g.nicks.get(&desired_key) {
                             if *other != conn_id {
                                 true
                             } else {
                                 if let Some(ref old) = old_nick {
-                                    g.nicks.remove(old);
+                                    g.nicks.remove(&ascii_casefold(old));
                                 }
-                                g.nicks.insert(desired.clone(), conn_id);
+                                g.nicks.insert(desired_key.clone(), conn_id);
                                 g.id_to_nick.insert(conn_id, desired.clone());
                                 false
                             }
                         } else {
                             if let Some(ref old) = old_nick {
-                                g.nicks.remove(old);
+                                g.nicks.remove(&ascii_casefold(old));
                             }
-                            g.nicks.insert(desired.clone(), conn_id);
+                            g.nicks.insert(desired_key, conn_id);
                             g.id_to_nick.insert(conn_id, desired.clone());
                             false
                         }
@@ -369,6 +398,8 @@ where
                         user.as_deref(),
                         realname.as_deref(),
                         cap_negotiating,
+                        cfg.server.max_nick_length,
+                        cfg.server.max_channel_length,
                     ).await?;
                     continue;
                 }
@@ -401,13 +432,15 @@ where
                         user.as_deref(),
                         realname.as_deref(),
                         cap_negotiating,
+                        cfg.server.max_nick_length,
+                        cfg.server.max_channel_length,
                     ).await?;
                     continue;
                 }
 
                 if msg.command_eq("PING") {
                     let token = msg.params.first().map(String::as_str).unwrap_or(server_name);
-                    writer.write_all(format!("PONG :{token}\r\n").as_bytes()).await?;
+                    writer.write_all(format!(":{server_name} PONG {server_name} :{token}\r\n").as_bytes()).await?;
                     continue;
                 }
 
@@ -511,7 +544,7 @@ where
                             // Ensure display nick is indexed before NAMES (first NICK may race).
                             if let Some(ref n) = nick {
                                 g.id_to_nick.insert(conn_id, n.clone());
-                                g.nicks.entry(n.clone()).or_insert(conn_id);
+                                g.nicks.entry(ascii_casefold(n)).or_insert(conn_id);
                             }
                             let id_nicks = g.id_to_nick.clone();
                             let exists = g.channels.contains_key(chan);
@@ -829,7 +862,7 @@ where
                     let reason = msg.params.get(2).map(String::as_str).unwrap_or(nick_s);
                     let (allowed, target_id) = {
                         let g = shared.lock().await;
-                        let target_id = g.nicks.get(target_nick.as_str()).copied();
+                        let target_id = g.nicks.get(&ascii_casefold(target_nick.as_str())).copied();
                         match (g.channels.get(chan.as_str()), target_id) {
                             (Some(ch), Some(tid)) if ch.members.contains(&tid) => {
                                 (is_oper || ch.is_op(conn_id), Some(tid))
@@ -922,7 +955,7 @@ where
                             'o' => {
                                 let Some(who) = mode_arg.clone() else { continue };
                                 let mut g = shared.lock().await;
-                                let Some(tid) = g.nicks.get(&who).copied() else {
+                                let Some(tid) = g.nicks.get(&ascii_casefold(&who)).copied() else {
                                     drop(g);
                                     writer.write_all(
                                         numeric(server_name, 441, nick_s, &[who.as_str(), target.as_str(), "They aren't on that channel"]).as_bytes(),
@@ -985,11 +1018,23 @@ where
                     }
                     continue;
                 }
+
+                writer.write_all(
+                    numeric(
+                        server_name,
+                        421,
+                        nick_s,
+                        &[msg.command.as_str(), "Unknown command"],
+                    )
+                    .as_bytes(),
+                )
+                .await?;
+                continue;
     }
 
     if let Some(n) = nick {
         let mut g = shared.lock().await;
-        g.nicks.remove(&n);
+        g.nicks.remove(&ascii_casefold(&n));
         g.id_to_nick.remove(&conn_id);
         for chan in &channels {
             if let Some(ch) = g.channels.get_mut(chan) {
@@ -1028,7 +1073,7 @@ impl Drop for ConnRelease {
             let mut g = shared.lock().await;
             g.release(peer);
             if let Some(nick) = g.id_to_nick.remove(&conn_id) {
-                g.nicks.remove(&nick);
+                g.nicks.remove(&ascii_casefold(&nick));
             }
             let affected: Vec<String> = g
                 .channels
@@ -1258,6 +1303,8 @@ async fn try_register<W>(
     user: Option<&str>,
     _realname: Option<&str>,
     cap_negotiating: bool,
+    nick_len: usize,
+    chan_len: usize,
 ) -> Result<()>
 where
     W: AsyncWriteExt + Unpin,
@@ -1318,6 +1365,12 @@ where
             .as_bytes(),
         )
         .await?;
+    let isupport = format!(
+        "CASEMAPPING=ascii CHANTYPES=# PREFIX=(o)@ NICKLEN={nick_len} CHANNELLEN={chan_len} CHANMODES=,,,nt NETWORK=DSC :are supported by this server"
+    );
+    writer
+        .write_all(numeric(server_name, 5, nick, &[isupport.as_str()]).as_bytes())
+        .await?;
     let motd_start = format!("- {server_name} Message of the day -");
     writer
         .write_all(numeric(server_name, 375, nick, &[motd_start.as_str()]).as_bytes())
@@ -1353,16 +1406,24 @@ mod tests {
     fn apply_cap_req_ack_nak_enable_disable() {
         let advertised = advertised_caps(true);
         let mut enabled = HashSet::new();
+        // Mixed unknown → atomic NAK, no enable
         let (ack, nak) = apply_cap_req(
-            "sasl bogon -sasl away-notify",
+            "sasl bogon",
             &advertised,
             &mut enabled,
         );
+        assert!(ack.is_empty());
+        assert_eq!(nak.len(), 2);
+        assert!(enabled.is_empty());
+        // Clean REQ ACKs
+        let (ack, nak) = apply_cap_req("sasl", &advertised, &mut enabled);
         assert!(ack.iter().any(|t| t == "sasl"));
-        assert!(ack.iter().any(|t| t == "-sasl"));
-        assert!(nak.iter().any(|t| t == "bogon"));
-        assert!(nak.iter().any(|t| t == "away-notify"));
-        assert!(!enabled.contains("sasl"));
+        assert!(nak.is_empty());
+        assert!(enabled.contains("sasl"));
+        // Cannot disable cap-notify
+        let (ack, nak) = apply_cap_req("-cap-notify", &advertised, &mut enabled);
+        assert!(ack.is_empty());
+        assert!(!nak.is_empty());
     }
 
     #[test]
@@ -1377,7 +1438,8 @@ mod tests {
         assert!(!with.iter().any(|c| c == "server-time"));
         assert!(!with.iter().any(|c| c == "multi-prefix"));
         let without = advertised_caps(false);
-        assert!(without.is_empty());
+        assert!(without.iter().any(|c| c == "cap-notify"));
+        assert_eq!(without.len(), 1);
     }
 
     #[test]
