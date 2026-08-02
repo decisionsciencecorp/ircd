@@ -29,14 +29,81 @@ struct BusMsg {
     skip_conn: u64,
 }
 
-struct Shared {
-    next_id: u64,
+/// Per-channel membership and simple modes (+n/+t) plus channel ops.
+#[derive(Debug, Clone)]
+pub(crate) struct ChannelState {
+    pub members: HashSet<String>,
+    pub ops: HashSet<String>,
+    pub topic: Option<String>,
+    /// +n — no messages from outside
+    pub mode_n: bool,
+    /// +t — only ops may set topic
+    pub mode_t: bool,
+}
+
+impl Default for ChannelState {
+    fn default() -> Self {
+        Self {
+            members: HashSet::new(),
+            ops: HashSet::new(),
+            topic: None,
+            mode_n: true,
+            mode_t: true,
+        }
+    }
+}
+
+impl ChannelState {
+    pub fn names_prefixed(&self) -> String {
+        let mut names: Vec<(String, String)> = self
+            .members
+            .iter()
+            .map(|n| {
+                let display = if self.ops.contains(n) {
+                    format!("@{n}")
+                } else {
+                    n.clone()
+                };
+                (n.to_ascii_lowercase(), display)
+            })
+            .collect();
+        names.sort_by(|a, b| a.0.cmp(&b.0));
+        names
+            .into_iter()
+            .map(|(_, d)| d)
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    pub fn mode_chars(&self) -> String {
+        let mut s = String::from("+");
+        if self.mode_n {
+            s.push('n');
+        }
+        if self.mode_t {
+            s.push('t');
+        }
+        s
+    }
+
+    pub fn is_op(&self, nick: &str) -> bool {
+        self.ops.contains(nick)
+    }
+
+    pub fn remove_nick(&mut self, nick: &str) {
+        self.members.remove(nick);
+        self.ops.remove(nick);
+    }
+}
+
+pub(crate) struct Shared {
+    pub next_id: u64,
     /// nick -> connection id (single nick registration for v0)
-    nicks: HashMap<String, u64>,
-    /// channel -> member nicks
-    channels: HashMap<String, HashSet<String>>,
-    bus: broadcast::Sender<BusMsg>,
-    config: Arc<Config>,
+    pub nicks: HashMap<String, u64>,
+    /// channel -> state
+    pub channels: HashMap<String, ChannelState>,
+    pub bus: broadcast::Sender<BusMsg>,
+    pub config: Arc<Config>,
 }
 
 impl Shared {

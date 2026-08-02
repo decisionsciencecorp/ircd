@@ -12,7 +12,6 @@ pub struct Config {
     #[serde(default)]
     pub listen: Vec<ListenSection>,
     #[serde(default)]
-    #[allow(dead_code)]
     pub oper: OperSection,
 }
 
@@ -23,12 +22,9 @@ pub struct ServerSection {
     pub name: String,
     #[serde(default = "default_motd")]
     pub motd: String,
-    /// Reserved for ADMIN numeric replies (ops slice).
     #[serde(default)]
-    #[allow(dead_code)]
     pub admin_name: String,
     #[serde(default)]
-    #[allow(dead_code)]
     pub admin_email: String,
     #[serde(default = "default_nick_len")]
     pub max_nick_length: usize,
@@ -59,14 +55,13 @@ pub struct ListenSection {
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
-#[allow(dead_code)] // stub surface until OPER auth lands
 pub struct OperSection {
-    /// Stub only — authentication lands with ops modes slice.
+    /// When false, OPER always fails (no O-lines).
     #[serde(default)]
     pub enabled: bool,
     #[serde(default)]
     pub name: String,
-    /// Placeholder; never log this. Real auth is future work.
+    /// Lab plaintext match only — replace with hash before any public deploy.
     #[serde(default)]
     pub password: String,
 }

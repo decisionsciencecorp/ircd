@@ -22,8 +22,8 @@ tls = true
 cert = "./certs/cert.pem"
 key = "./certs/key.pem"
 
-# Oper block stub — auth not enforced yet (ops modes task).
+# OPER (lab plaintext password — do not use on a public host).
 [oper]
-enabled = false
+enabled = true
 name = "admin"
 password = "change-me"
