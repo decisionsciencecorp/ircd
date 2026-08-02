@@ -43,6 +43,18 @@ pub struct LimitsSection {
     /// Max IRC line octets including CR/LF (disconnect if exceeded). Default 8192 (IRCv3-tagged budget).
     #[serde(default = "default_max_line_bytes")]
     pub max_line_bytes: usize,
+    /// Max channels that may exist server-wide.
+    #[serde(default = "default_max_channels")]
+    pub max_channels: usize,
+    /// Max channels a single client may join.
+    #[serde(default = "default_max_channels_per_client")]
+    pub max_channels_per_client: usize,
+    /// Max members in one channel.
+    #[serde(default = "default_max_members")]
+    pub max_members_per_channel: usize,
+    /// Max topic octets (excluding framing).
+    #[serde(default = "default_max_topic")]
+    pub max_topic_bytes: usize,
 }
 
 fn default_max_clients() -> usize {
@@ -60,6 +72,18 @@ fn default_flood_window() -> u64 {
 fn default_max_line_bytes() -> usize {
     8192
 }
+fn default_max_channels() -> usize {
+    1024
+}
+fn default_max_channels_per_client() -> usize {
+    64
+}
+fn default_max_members() -> usize {
+    512
+}
+fn default_max_topic() -> usize {
+    390
+}
 
 impl Default for LimitsSection {
     fn default() -> Self {
@@ -69,6 +93,10 @@ impl Default for LimitsSection {
             flood_lines_per_window: default_flood_lines(),
             flood_window_secs: default_flood_window(),
             max_line_bytes: default_max_line_bytes(),
+            max_channels: default_max_channels(),
+            max_channels_per_client: default_max_channels_per_client(),
+            max_members_per_channel: default_max_members(),
+            max_topic_bytes: default_max_topic(),
         }
     }
 }
@@ -296,6 +324,15 @@ mod tests {
     #[test]
     fn default_valid() {
         Config::default().validate().unwrap();
+    }
+
+    #[test]
+    fn quotas_defaults_sane() {
+        let c = Config::default();
+        assert!(c.limits.max_channels >= 1);
+        assert!(c.limits.max_channels_per_client >= 1);
+        assert!(c.limits.max_members_per_channel >= 1);
+        assert!(c.limits.max_topic_bytes >= 1);
     }
 
     #[test]

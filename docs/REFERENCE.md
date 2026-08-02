@@ -47,3 +47,19 @@ We use **TOML** (`config.example.toml`), not Unreal’s block language. Knobs ma
 | Connection class / flood | `[limits]` — `max_clients`, `max_clients_per_ip`, `flood_lines_per_window`, `flood_window_secs` |
 
 CLI `--bind` / `--tls-bind` replace the listen list when present (handy for lab). Prefer `--config` for standing instances.
+
+
+## Limits knobs (`[limits]`)
+
+| Key | Default | Effect |
+|-----|---------|--------|
+| `max_clients` | 256 | Global concurrent connections |
+| `max_clients_per_ip` | 32 | Per-IP connection cap |
+| `max_line_bytes` | 8192 | Max IRC line including CR/LF |
+| `max_channels` | 1024 | Server-wide channel count |
+| `max_channels_per_client` | 64 | Channels one client may join |
+| `max_members_per_channel` | 512 | Membership cap per channel |
+| `max_topic_bytes` | 390 | Topic text octet cap |
+| `flood_lines_per_window` / `flood_window_secs` | 30 / 10 | Recv flood guard |
+
+History retention: `[history] max_per_channel`, `max_total_rows` (see A6).

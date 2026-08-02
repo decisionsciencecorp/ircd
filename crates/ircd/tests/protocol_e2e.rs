@@ -73,8 +73,11 @@ async fn flood_closes() {
         max_clients_per_ip: 32,
         flood_lines_per_window: 5,
         flood_window_secs: 30,
-    
         max_line_bytes: 8192,
+        max_channels: 1024,
+        max_channels_per_client: 64,
+        max_members_per_channel: 512,
+        max_topic_bytes: 390,
     };
     let shared = Arc::new(Mutex::new(Shared::new(Arc::new(cfg), None)));
     with_client(shared, 4, |mut w, mut r| async move {

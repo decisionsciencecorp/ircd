@@ -137,6 +137,11 @@ impl Shared {
         Ok(())
     }
 
+    /// Whether a new channel name may be created under `[limits].max_channels`.
+    pub fn can_create_channel(&self) -> bool {
+        self.channels.len() < self.config.limits.max_channels
+    }
+
     pub fn release(&mut self, peer: SocketAddr) {
         let ip = peer.ip().to_string();
         self.client_count = self.client_count.saturating_sub(1);
@@ -189,6 +194,16 @@ mod tests {
         nicks.insert("OpOld".into(), 99);
         assert!(!ch.members.contains(&99));
         assert!(!ch.is_op(99));
+    }
+
+    #[test]
+    fn can_create_channel_respects_cap() {
+        let mut cfg = Config::default();
+        cfg.limits.max_channels = 1;
+        let mut s = Shared::new(Arc::new(cfg), None);
+        assert!(s.can_create_channel());
+        s.channels.insert("#a".into(), ChannelState::default());
+        assert!(!s.can_create_channel());
     }
 
     #[test]

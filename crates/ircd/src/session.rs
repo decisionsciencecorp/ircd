@@ -497,7 +497,16 @@ where
                             ).await?;
                             continue;
                         }
-                        let (names_list, topic, already) = {
+                        // Client-local channel quota (checked before taking the lock for create).
+                        if !channels.contains(chan)
+                            && channels.len() >= cfg.limits.max_channels_per_client
+                        {
+                            writer.write_all(
+                                numeric(server_name, 405, nick_s, &[chan, "You have joined too many channels"]).as_bytes(),
+                            ).await?;
+                            continue;
+                        }
+                        let join_result = {
                             let mut g = shared.lock().await;
                             // Ensure display nick is indexed before NAMES (first NICK may race).
                             if let Some(ref n) = nick {
@@ -505,22 +514,45 @@ where
                                 g.nicks.entry(n.clone()).or_insert(conn_id);
                             }
                             let id_nicks = g.id_to_nick.clone();
-                            let ch = g.channels.entry(chan.to_string()).or_default();
-                            let already = ch.members.contains(&conn_id);
-                            if !already {
-                                let first = ch.members.is_empty();
-                                ch.members.insert(conn_id);
-                                if first {
-                                    ch.ops.insert(conn_id);
+                            let exists = g.channels.contains_key(chan);
+                            if !exists && g.channels.len() >= cfg.limits.max_channels {
+                                Err(405)
+                            } else {
+                                let ch = g.channels.entry(chan.to_string()).or_default();
+                                let already = ch.members.contains(&conn_id);
+                                if already {
+                                    Ok(None)
+                                } else if ch.members.len() >= cfg.limits.max_members_per_channel {
+                                    Err(471)
+                                } else {
+                                    let first = ch.members.is_empty();
+                                    ch.members.insert(conn_id);
+                                    if first {
+                                        ch.ops.insert(conn_id);
+                                    }
+                                    let topic = ch.topic.clone();
+                                    let names = ch.names_prefixed(&id_nicks);
+                                    Ok(Some((names, topic)))
                                 }
                             }
-                            let topic = ch.topic.clone();
-                            let names = ch.names_prefixed(&id_nicks);
-                            (names, topic, already)
                         };
-                        if already {
-                            continue;
-                        }
+                        let (names_list, topic) = match join_result {
+                            Ok(None) => continue, // already a member
+                            Ok(Some(pair)) => pair,
+                            Err(405) => {
+                                writer.write_all(
+                                    numeric(server_name, 405, nick_s, &[chan, "Too many channels on this server"]).as_bytes(),
+                                ).await?;
+                                continue;
+                            }
+                            Err(471) => {
+                                writer.write_all(
+                                    numeric(server_name, 471, nick_s, &[chan, "Cannot join channel (+l)"]).as_bytes(),
+                                ).await?;
+                                continue;
+                            }
+                            Err(_) => continue,
+                        };
                         channels.insert(chan.to_string());
                         let join_line = format!(":{prefix} JOIN :{chan}\r\n");
                         writer.write_all(join_line.as_bytes()).await?;
@@ -744,6 +776,12 @@ where
                     if field_has_control(&new_topic) {
                         writer.write_all(
                             numeric(server_name, 461, nick_s, &["TOPIC", "Invalid topic"]).as_bytes(),
+                        ).await?;
+                        continue;
+                    }
+                    if new_topic.len() > cfg.limits.max_topic_bytes {
+                        writer.write_all(
+                            numeric(server_name, 461, nick_s, &["TOPIC", "Topic too long"]).as_bytes(),
                         ).await?;
                         continue;
                     }
