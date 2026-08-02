@@ -4,3 +4,4 @@
 *.swp
 .env
 .env.*
+.otto-githooks-installed
