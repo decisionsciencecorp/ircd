@@ -299,11 +299,8 @@ where
                                 &format!("PRIVMSG {chan} :{text}\r\n"),
                             )
                             .await?;
-                            msg_sent = true;
-                        } else {
-                            msg_sent = true;
                         }
-                        if args.quit_after && msg_sent {
+                        if args.quit_after {
                             send_line(&mut writer, "QUIT :ircc smoke done\r\n").await?;
                             break;
                         }

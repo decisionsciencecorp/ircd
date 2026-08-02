@@ -41,6 +41,13 @@ cargo run -p ircc -- --tls --host 127.0.0.1 --port 6697 --nick otto \
 Production networks should use real certificates; `gen-cert` is for local lab only.  
 `--tls` on `ircc` **disables certificate verification** — never point that at the public internet as a trust model.
 
+CAP smoke:
+
+```bash
+cargo run -p ircc -- --cap --host 127.0.0.1 --port 6667 --nick otto \
+  --join '#test' --msg 'hello' --quit
+```
+
 Interactive: omit `--quit` and type `/join #test`, `/msg #test hi`, or bare lines (PRIVMSG to joined channel).
 
 ## Workspace
