@@ -256,6 +256,7 @@ where
                         ).await?;
                         continue;
                     }
+                    let old_nick = nick.clone();
                     {
                         let mut g = shared.lock().await;
                         if let Some(other) = g.nicks.get(&desired) {
@@ -266,12 +267,28 @@ where
                                 continue;
                             }
                         }
-                        if let Some(old) = nick.take() {
-                            g.nicks.remove(&old);
+                        if let Some(ref old) = old_nick {
+                            g.nicks.remove(old);
                         }
                         g.nicks.insert(desired.clone(), conn_id);
+                        g.id_to_nick.insert(conn_id, desired.clone());
                     }
-                    nick = Some(desired);
+                    nick = Some(desired.clone());
+                    if let Some(old) = old_nick {
+                        if registered && old != desired {
+                            let user_s = user.as_deref().unwrap_or("user");
+                            let line = format!(":{old}!{user_s}@dsc.local NICK :{desired}\r\n");
+                            writer.write_all(line.as_bytes()).await?;
+                            let g = shared.lock().await;
+                            for chan in &channels {
+                                let _ = g.bus.send(BusMsg {
+                                    target: chan.clone(),
+                                    line: line.clone(),
+                                    skip_conn: conn_id,
+                                });
+                            }
+                        }
+                    }
                     try_register(
                         &mut writer,
                         server_name,
@@ -388,16 +405,24 @@ where
                         }
                         let (names_list, topic, already) = {
                             let mut g = shared.lock().await;
+                            // Ensure display nick is indexed before NAMES (first NICK may race).
+                            if let Some(ref n) = nick {
+                                g.id_to_nick.insert(conn_id, n.clone());
+                                g.nicks.entry(n.clone()).or_insert(conn_id);
+                            }
+                            let id_nicks = g.id_to_nick.clone();
                             let ch = g.channels.entry(chan.to_string()).or_default();
-                            let already = ch.members.contains(nick_s);
+                            let already = ch.members.contains(&conn_id);
                             if !already {
                                 let first = ch.members.is_empty();
-                                ch.members.insert(nick_s.to_string());
+                                ch.members.insert(conn_id);
                                 if first {
-                                    ch.ops.insert(nick_s.to_string());
+                                    ch.ops.insert(conn_id);
                                 }
                             }
-                            (ch.names_prefixed(), ch.topic.clone(), already)
+                            let topic = ch.topic.clone();
+                            let names = ch.names_prefixed(&id_nicks);
+                            (names, topic, already)
                         };
                         if already {
                             continue;
@@ -516,7 +541,7 @@ where
                         let (allowed, hist) = {
                             let g = shared.lock().await;
                             let allowed = match g.channels.get(target.as_str()) {
-                                Some(ch) if ch.members.contains(nick_s) => true,
+                                Some(ch) if ch.members.contains(&conn_id) => true,
                                 Some(ch) if !ch.mode_n => true,
                                 Some(_) => false,
                                 None => false,
@@ -555,7 +580,7 @@ where
                     {
                         let mut g = shared.lock().await;
                         if let Some(ch) = g.channels.get_mut(chan) {
-                            ch.remove_nick(nick_s);
+                            ch.remove_member(conn_id);
                             if ch.members.is_empty() {
                                 g.channels.remove(chan);
                             }
@@ -602,7 +627,7 @@ where
                     let allowed = {
                         let g = shared.lock().await;
                         match g.channels.get(chan.as_str()) {
-                            Some(ch) if is_oper || ch.is_op(nick_s) => true,
+                            Some(ch) if is_oper || ch.is_op(conn_id) => true,
                             Some(ch) if !ch.mode_t => true,
                             _ => false,
                         }
@@ -641,18 +666,22 @@ where
                         continue;
                     };
                     let reason = msg.params.get(2).map(String::as_str).unwrap_or(nick_s);
-                    let allowed = {
+                    let (allowed, target_id) = {
                         let g = shared.lock().await;
-                        match g.channels.get(chan.as_str()) {
-                            Some(ch) if ch.members.contains(target_nick) => {
-                                is_oper || ch.is_op(nick_s)
+                        let target_id = g.nicks.get(target_nick.as_str()).copied();
+                        match (g.channels.get(chan.as_str()), target_id) {
+                            (Some(ch), Some(tid)) if ch.members.contains(&tid) => {
+                                (is_oper || ch.is_op(conn_id), Some(tid))
                             }
-                            _ => false,
+                            _ => (false, target_id),
                         }
                     };
                     if !allowed {
                         let g = shared.lock().await;
-                        if g.channels.get(chan.as_str()).map(|c| c.members.contains(target_nick)) != Some(true) {
+                        let on_chan = target_id
+                            .and_then(|tid| g.channels.get(chan.as_str()).map(|c| c.members.contains(&tid)))
+                            .unwrap_or(false);
+                        if !on_chan {
                             writer.write_all(
                                 numeric(server_name, 441, nick_s, &[target_nick.as_str(), chan.as_str(), "They aren't on that channel"]).as_bytes(),
                             ).await?;
@@ -665,10 +694,12 @@ where
                     }
                     {
                         let mut g = shared.lock().await;
-                        if let Some(ch) = g.channels.get_mut(chan.as_str()) {
-                            ch.remove_nick(target_nick);
-                            if ch.members.is_empty() {
-                                g.channels.remove(chan.as_str());
+                        if let Some(tid) = target_id {
+                            if let Some(ch) = g.channels.get_mut(chan.as_str()) {
+                                ch.remove_member(tid);
+                                if ch.members.is_empty() {
+                                    g.channels.remove(chan.as_str());
+                                }
                             }
                         }
                     }
@@ -707,7 +738,7 @@ where
                     let privileged = {
                         let g = shared.lock().await;
                         match g.channels.get(target.as_str()) {
-                            Some(ch) => is_oper || ch.is_op(nick_s),
+                            Some(ch) => is_oper || ch.is_op(conn_id),
                             None => false,
                         }
                     };
@@ -728,8 +759,15 @@ where
                             'o' => {
                                 let Some(who) = mode_arg.clone() else { continue };
                                 let mut g = shared.lock().await;
+                                let Some(tid) = g.nicks.get(&who).copied() else {
+                                    drop(g);
+                                    writer.write_all(
+                                        numeric(server_name, 441, nick_s, &[who.as_str(), target.as_str(), "They aren't on that channel"]).as_bytes(),
+                                    ).await?;
+                                    continue;
+                                };
                                 let Some(chan) = g.channels.get_mut(target.as_str()) else { continue };
-                                if !chan.members.contains(&who) {
+                                if !chan.members.contains(&tid) {
                                     drop(g);
                                     writer.write_all(
                                         numeric(server_name, 441, nick_s, &[who.as_str(), target.as_str(), "They aren't on that channel"]).as_bytes(),
@@ -737,9 +775,9 @@ where
                                     continue;
                                 }
                                 if adding {
-                                    chan.ops.insert(who.clone());
+                                    chan.ops.insert(tid);
                                 } else {
-                                    chan.ops.remove(&who);
+                                    chan.ops.remove(&tid);
                                 }
                                 applied.push(if adding { '+' } else { '-' });
                                 applied.push('o');
@@ -789,13 +827,10 @@ where
     if let Some(n) = nick {
         let mut g = shared.lock().await;
         g.nicks.remove(&n);
+        g.id_to_nick.remove(&conn_id);
         for chan in &channels {
             if let Some(ch) = g.channels.get_mut(chan) {
-                ch.remove_nick(&n);
-                let empty = ch.members.is_empty();
-                if empty {
-                    // remove after send prep
-                }
+                ch.remove_member(conn_id);
             }
             let user_s = user.as_deref().unwrap_or("user");
             let line = format!(":{n}!{user_s}@dsc.local QUIT :Connection closed\r\n");

@@ -155,3 +155,34 @@ async fn truthful_cap_ls_omits_unimplemented() {
     })
     .await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn nick_change_does_not_transfer_ops_to_stolen_nick() {
+    let shared = shared_plain();
+    with_two_clients(shared, |(mut w1, mut r1), (mut w2, mut r2)| async move {
+        // Client1 becomes channel op as OpOld
+        w1.write_all(b"NICK OpOld\r\nUSER o 0 * :O\r\nJOIN #priv\r\n").await.unwrap();
+        let _ = read_until(&mut r1, |l| l.iter().any(|x| x.contains("JOIN"))).await;
+        // Rename — ops must stay on Client1's id
+        w1.write_all(b"NICK OpNew\r\n").await.unwrap();
+        let _ = read_until(&mut r1, |l| l.iter().any(|x| x.contains("NICK"))).await;
+        // Client2 steals OpOld
+        w2.write_all(b"NICK OpOld\r\nUSER s 0 * :S\r\n").await.unwrap();
+        let _ = read_until(&mut r2, |l| l.iter().any(|x| x.contains("001"))).await;
+        // Stolen nick must not MODE/KICK without joining
+        w2.write_all(b"MODE #priv +o OpNew\r\nKICK #priv OpNew :nope\r\nPRIVMSG #priv :pwn\r\nQUIT :x\r\n")
+            .await
+            .unwrap();
+        let lines = read_until(&mut r2, |l| l.iter().any(|x| x.contains("ERROR") || x.contains("482") || x.contains("404") || x.contains("441") || x.contains("QUIT") || l.len() > 3)).await;
+        let blob = lines.join("\n");
+        assert!(
+            !blob.contains("MODE #priv +o") || blob.contains("482") || blob.contains("442") || blob.contains("401") || blob.contains("403") || blob.contains("441") || blob.contains("404"),
+            "stolen nick must not exercise op authority: {blob}"
+        );
+        // OpNew (original) can still kick if somehow needed — at least still op for MODE
+        w1.write_all(b"MODE #priv\r\nQUIT :x\r\n").await.unwrap();
+        let op_lines = read_until(&mut r1, |l| l.iter().any(|x| x.contains("324") || x.contains("QUIT"))).await;
+        assert!(op_lines.iter().any(|l| l.contains("324")), "{op_lines:?}");
+    })
+    .await;
+}

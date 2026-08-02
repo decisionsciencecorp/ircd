@@ -9,20 +9,23 @@ use tokio::sync::broadcast;
 use crate::config::Config;
 use crate::history::HistoryStore;
 
+/// Stable connection identity for authorization and membership (not display nick).
+pub type ClientId = u64;
+
 #[derive(Clone, Debug)]
 pub struct BusMsg {
     /// Channel name including `#`, or `*` for server-wide (unused for now).
     pub target: String,
     pub line: String,
     /// Skip delivering back to this connection id.
-    pub skip_conn: u64,
+    pub skip_conn: ClientId,
 }
 
 /// Per-channel membership and simple modes (+n/+t) plus channel ops.
 #[derive(Debug, Clone)]
 pub struct ChannelState {
-    pub members: HashSet<String>,
-    pub ops: HashSet<String>,
+    pub members: HashSet<ClientId>,
+    pub ops: HashSet<ClientId>,
     pub topic: Option<String>,
     /// +n — no messages from outside
     pub mode_n: bool,
@@ -43,17 +46,18 @@ impl Default for ChannelState {
 }
 
 impl ChannelState {
-    pub fn names_prefixed(&self) -> String {
+    pub fn names_prefixed(&self, id_to_nick: &HashMap<ClientId, String>) -> String {
         let mut names: Vec<(String, String)> = self
             .members
             .iter()
-            .map(|n| {
-                let display = if self.ops.contains(n) {
-                    format!("@{n}")
+            .filter_map(|id| {
+                let nick = id_to_nick.get(id)?;
+                let display = if self.ops.contains(id) {
+                    format!("@{nick}")
                 } else {
-                    n.clone()
+                    nick.clone()
                 };
-                (n.to_ascii_lowercase(), display)
+                Some((nick.to_ascii_lowercase(), display))
             })
             .collect();
         names.sort_by(|a, b| a.0.cmp(&b.0));
@@ -75,21 +79,23 @@ impl ChannelState {
         s
     }
 
-    pub fn is_op(&self, nick: &str) -> bool {
-        self.ops.contains(nick)
+    pub fn is_op(&self, id: ClientId) -> bool {
+        self.ops.contains(&id)
     }
 
-    pub fn remove_nick(&mut self, nick: &str) {
-        self.members.remove(nick);
-        self.ops.remove(nick);
+    pub fn remove_member(&mut self, id: ClientId) {
+        self.members.remove(&id);
+        self.ops.remove(&id);
     }
 }
 
 pub struct Shared {
-    pub next_id: u64,
-    /// nick -> connection id (single nick registration for v0)
-    pub nicks: HashMap<String, u64>,
-    /// channel -> state
+    pub next_id: ClientId,
+    /// Display nick → connection id (single nick registration for v0)
+    pub nicks: HashMap<String, ClientId>,
+    /// Connection id → current display nick
+    pub id_to_nick: HashMap<ClientId, String>,
+    /// channel → state
     pub channels: HashMap<String, ChannelState>,
     pub bus: broadcast::Sender<BusMsg>,
     pub config: Arc<Config>,
@@ -105,6 +111,7 @@ impl Shared {
         Self {
             next_id: 1,
             nicks: HashMap::new(),
+            id_to_nick: HashMap::new(),
             channels: HashMap::new(),
             bus,
             config,
@@ -154,11 +161,34 @@ mod tests {
     #[test]
     fn names_prefixed_ops_sorted() {
         let mut ch = ChannelState::default();
-        ch.members.insert("bob".into());
-        ch.members.insert("alice".into());
-        ch.ops.insert("bob".into());
-        // Sorted by nick (case-insensitive); @op is display-only.
-        assert_eq!(ch.names_prefixed(), "alice @bob");
+        ch.members.insert(1);
+        ch.members.insert(2);
+        ch.ops.insert(2);
+        let mut map: HashMap<ClientId, String> = HashMap::new();
+        map.insert(1, "alice".into());
+        map.insert(2, "bob".into());
+        assert_eq!(ch.names_prefixed(&map), "alice @bob");
+    }
+
+    #[test]
+    fn nick_change_keeps_ops_on_client_id() {
+        let mut ch = ChannelState::default();
+        ch.members.insert(7);
+        ch.ops.insert(7);
+        let mut nicks: HashMap<String, ClientId> = HashMap::new();
+        let mut id_to_nick: HashMap<ClientId, String> = HashMap::new();
+        nicks.insert("OpOld".into(), 7u64);
+        id_to_nick.insert(7u64, "OpOld".into());
+        // NICK OpOld -> OpNew: membership stays on id 7
+        nicks.remove("OpOld");
+        nicks.insert("OpNew".into(), 7);
+        id_to_nick.insert(7, "OpNew".into());
+        assert!(ch.is_op(7));
+        assert!(ch.members.contains(&7));
+        // Stolen old nick is a different connection
+        nicks.insert("OpOld".into(), 99);
+        assert!(!ch.members.contains(&99));
+        assert!(!ch.is_op(99));
     }
 
     #[test]
@@ -194,11 +224,11 @@ mod tests {
         assert_eq!(ch.mode_chars(), "+nt");
         ch.mode_n = false;
         assert_eq!(ch.mode_chars(), "+t");
-        ch.members.insert("x".into());
-        ch.ops.insert("x".into());
-        assert!(ch.is_op("x"));
-        ch.remove_nick("x");
+        ch.members.insert(3);
+        ch.ops.insert(3);
+        assert!(ch.is_op(3));
+        ch.remove_member(3);
         assert!(ch.members.is_empty());
-        assert!(!ch.is_op("x"));
+        assert!(!ch.is_op(3));
     }
 }
