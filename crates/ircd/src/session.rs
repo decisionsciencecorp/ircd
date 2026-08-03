@@ -17,12 +17,21 @@ use crate::VERSION;
 
 /// Caps advertised without per-cap conformance tests must stay empty (A1 / Doc #974).
 /// SASL is added conditionally in `advertised_caps` when accounts exist.
-const BASE_CAPS: &[&str] = &["cap-notify"];
+const BASE_CAPS: &[&str] = &[
+    "cap-notify",
+    "message-tags",
+    "server-time",
+    "account-tag",
+    "batch",
+];
 
-fn advertised_caps(has_accounts: bool) -> Vec<String> {
+fn advertised_caps(has_accounts: bool, has_history: bool) -> Vec<String> {
     let mut caps: Vec<String> = BASE_CAPS.iter().map(|s| (*s).to_string()).collect();
     if has_accounts {
         caps.push("sasl=PLAIN".to_string());
+    }
+    if has_history {
+        caps.push("draft/chathistory".to_string());
     }
     caps
 }
@@ -182,7 +191,8 @@ where
     let mut account: Option<String> = None;
     let mut sasl_state = SaslState::Idle;
     let has_accounts = !cfg.accounts.is_empty();
-    let cap_list = advertised_caps(has_accounts);
+    let has_history = cfg.history.enabled;
+    let cap_list = advertised_caps(has_accounts, has_history);
 
     // Event-driven select! between member outbox and timed reads (H-07/H-08).
     // Coverage must not dictate production scheduling — prefer outbox (biased).
@@ -752,9 +762,30 @@ where
                         .await
                         .unwrap_or_default();
                     // BATCH / chathistory CAP not advertised until Protocol P2 (#2227).
+                    let use_batch = has_cap(&enabled_caps, "batch");
+                    if use_batch {
+                        writer
+                            .write_all(
+                                format!(":{} BATCH +chathist draft/chathistory
+", server_name)
+                                    .as_bytes(),
+                            )
+                            .await?;
+                    }
                     for h in rows {
-                        let line = adapt_bus_line(&h.tagged_privmsg(), &enabled_caps);
+                        let mut line = adapt_bus_line(&h.tagged_privmsg(), &enabled_caps);
+                        if use_batch {
+                            line = prepend_tag(&line, "batch", "chathist");
+                        }
                         writer.write_all(line.as_bytes()).await?;
+                    }
+                    if use_batch {
+                        writer
+                            .write_all(
+                                format!(":{} BATCH -chathist
+", server_name).as_bytes(),
+                            )
+                            .await?;
                     }
                     continue;
                 }
@@ -1977,7 +2008,7 @@ mod tests {
 
     #[test]
     fn apply_cap_req_ack_nak_enable_disable() {
-        let advertised = advertised_caps(true);
+        let advertised = advertised_caps(true, false);
         let mut enabled = HashSet::new();
         // Mixed unknown → atomic NAK, no enable
         let (ack, nak) = apply_cap_req(
@@ -2001,18 +2032,21 @@ mod tests {
 
     #[test]
     fn advertised_caps_truthful_base_empty_sasl_conditional() {
-        let with = advertised_caps(true);
+        let with = advertised_caps(true, true);
         assert!(with.iter().any(|c| c.starts_with("sasl")));
         assert!(!with.iter().any(|c| c == "away-notify"));
-        assert!(!with.iter().any(|c| c == "message-tags"));
-        assert!(!with.iter().any(|c| c == "batch"));
-        assert!(!with.iter().any(|c| c == "chathistory"));
-        assert!(!with.iter().any(|c| c == "account-tag"));
-        assert!(!with.iter().any(|c| c == "server-time"));
+        assert!(with.iter().any(|c| c == "message-tags"));
+        assert!(with.iter().any(|c| c == "batch"));
+        assert!(with.iter().any(|c| c == "draft/chathistory"));
+        assert!(with.iter().any(|c| c == "account-tag"));
+        assert!(with.iter().any(|c| c == "server-time"));
         assert!(!with.iter().any(|c| c == "multi-prefix"));
-        let without = advertised_caps(false);
+        let with_no_hist = advertised_caps(true, false);
+        assert!(!with_no_hist.iter().any(|c| c == "draft/chathistory"));
+        let without = advertised_caps(false, false);
         assert!(without.iter().any(|c| c == "cap-notify"));
-        assert_eq!(without.len(), 1);
+        assert!(without.iter().any(|c| c == "message-tags"));
+        assert!(!without.iter().any(|c| c.starts_with("sasl")));
     }
 
     #[test]

@@ -30,21 +30,16 @@ async fn a1_cap_ls_has_no_false_ads() {
         let lines = read_until(&mut r, |l| l.iter().any(|x| x.contains("CAP") && x.contains("LS")))
             .await;
         let blob = lines.join("\n");
-        for forbidden in [
-            "message-tags",
-            "server-time",
-            "batch",
-            "chathistory",
-            "multi-prefix",
-            "away-notify",
-            "account-tag",
-        ] {
+        for forbidden in ["multi-prefix", "away-notify", "echo-message"] {
             assert!(
                 !blob.contains(forbidden),
                 "false CAP ad {forbidden}: {blob}"
             );
         }
-        assert!(blob.contains("cap-notify"), "{blob}");
+        // C3: these are advertised only with wire tests.
+        for required in ["cap-notify", "message-tags", "server-time", "account-tag", "batch"] {
+            assert!(blob.contains(required), "missing CAP {required}: {blob}");
+        }
     })
     .await;
 }

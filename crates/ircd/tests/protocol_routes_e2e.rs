@@ -138,18 +138,16 @@ async fn truthful_cap_ls_omits_unimplemented() {
             .iter()
             .find(|x| x.contains("LS"))
             .expect("CAP LS line");
-        for bad in [
-            "away-notify",
-            "message-tags",
-            "batch",
-            "chathistory",
-            "account-tag",
-            "server-time",
-            "multi-prefix",
-        ] {
+        for bad in ["away-notify", "multi-prefix", "echo-message"] {
             assert!(
                 !ls.to_ascii_lowercase().contains(bad),
                 "CAP LS must not advertise {bad}: {ls}"
+            );
+        }
+        for good in ["message-tags", "server-time", "account-tag", "batch", "cap-notify"] {
+            assert!(
+                ls.to_ascii_lowercase().contains(good),
+                "CAP LS must advertise {good}: {ls}"
             );
         }
     })
