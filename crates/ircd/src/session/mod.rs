@@ -1328,7 +1328,9 @@ where
                             continue;
                         }
                         let mode_str = msg.params.get(1).map(String::as_str).unwrap_or("");
-                        let mode_arg = msg.params.get(2).cloned();
+                        // Mode letters that take a parameter consume successive params
+                        // starting at index 2 (`MODE #c +oo a b` → a then b). (C8)
+                        let mut mode_argi = 2usize;
                         let privileged = {
                             let g = shared.lock().await;
                             match g.channel(target.as_str()) {
@@ -1354,14 +1356,24 @@ where
                         let mut adding = true;
                         let mut applied = String::new();
                         let mut applied_args: Vec<String> = Vec::new();
+                        let mut last_sign: Option<char> = None;
+                        let mut push_letter = |applied: &mut String, adding: bool, letter: char| {
+                            let sign = if adding { '+' } else { '-' };
+                            if last_sign != Some(sign) {
+                                applied.push(sign);
+                                last_sign = Some(sign);
+                            }
+                            applied.push(letter);
+                        };
                         for ch in mode_str.chars() {
                             match ch {
                                 '+' => adding = true,
                                 '-' => adding = false,
                                 'o' => {
-                                    let Some(who) = mode_arg.clone() else {
+                                    let Some(who) = msg.params.get(mode_argi).cloned() else {
                                         continue;
                                     };
+                                    mode_argi += 1;
                                     let mut g = shared.lock().await;
                                     let Some(tid) = g.nick_id(&ascii_casefold(&who)) else {
                                         drop(g);
@@ -1409,37 +1421,34 @@ where
                                     } else {
                                         chan.ops.remove(&tid);
                                     }
-                                    applied.push(if adding { '+' } else { '-' });
-                                    applied.push('o');
+                                    push_letter(&mut applied, adding, 'o');
                                     applied_args.push(who);
                                 }
                                 't' => {
                                     let mut g = shared.lock().await;
                                     if let Some(chan) = g.channel_mut(target.as_str()) {
                                         chan.mode_t = adding;
-                                        applied.push(if adding { '+' } else { '-' });
-                                        applied.push('t');
+                                        push_letter(&mut applied, adding, 't');
                                     }
                                 }
                                 'n' => {
                                     let mut g = shared.lock().await;
                                     if let Some(chan) = g.channel_mut(target.as_str()) {
                                         chan.mode_n = adding;
-                                        applied.push(if adding { '+' } else { '-' });
-                                        applied.push('n');
+                                        push_letter(&mut applied, adding, 'n');
                                     }
                                 }
                                 'i' => {
                                     let mut g = shared.lock().await;
                                     if let Some(chan) = g.channel_mut(target.as_str()) {
                                         chan.mode_i = adding;
-                                        applied.push(if adding { '+' } else { '-' });
-                                        applied.push('i');
+                                        push_letter(&mut applied, adding, 'i');
                                     }
                                 }
                                 'b' => {
-                                    let Some(mask) = mode_arg.clone() else {
-                                        // List bans
+                                    let mask = msg.params.get(mode_argi).cloned();
+                                    let Some(mask) = mask else {
+                                        // List bans when +b/-b has no parameter.
                                         let bans = {
                                             let g = shared.lock().await;
                                             g.channel(target.as_str())
@@ -1472,6 +1481,7 @@ where
                                             .await?;
                                         continue;
                                     };
+                                    mode_argi += 1;
                                     let mut g = shared.lock().await;
                                     if let Some(chan) = g.channel_mut(target.as_str()) {
                                         if adding {
@@ -1479,8 +1489,7 @@ where
                                         } else {
                                             chan.bans.remove(&mask);
                                         }
-                                        applied.push(if adding { '+' } else { '-' });
-                                        applied.push('b');
+                                        push_letter(&mut applied, adding, 'b');
                                         applied_args.push(mask);
                                     }
                                 }

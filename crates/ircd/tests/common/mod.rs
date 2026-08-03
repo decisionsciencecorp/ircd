@@ -126,6 +126,38 @@ where
     out
 }
 
+type ClientHalf = (
+    tokio::io::WriteHalf<DuplexStream>,
+    BufReader<tokio::io::ReadHalf<DuplexStream>>,
+);
+
+pub async fn with_three_clients<F, Fut>(shared: Arc<Mutex<Shared>>, client: F) -> Fut::Output
+where
+    F: FnOnce(ClientHalf, ClientHalf, ClientHalf) -> Fut,
+    Fut: std::future::Future,
+{
+    let (c1, s1) = tokio::io::duplex(64 * 1024);
+    let (c2, s2) = tokio::io::duplex(64 * 1024);
+    let (c3, s3) = tokio::io::duplex(64 * 1024);
+    let (s1r, s1w) = tokio::io::split(s1);
+    let (s2r, s2w) = tokio::io::split(s2);
+    let (s3r, s3w) = tokio::io::split(s3);
+    let (c1r, c1w) = tokio::io::split(c1);
+    let (c2r, c2w) = tokio::io::split(c2);
+    let (c3r, c3w) = tokio::io::split(c3);
+    let srv1 = handle_client(s1r, s1w, peer(1), Arc::clone(&shared), false, false);
+    let srv2 = handle_client(s2r, s2w, peer(2), Arc::clone(&shared), false, false);
+    let srv3 = handle_client(s3r, s3w, peer(3), Arc::clone(&shared), false, false);
+    let client_fut = client(
+        (c1w, BufReader::new(c1r)),
+        (c2w, BufReader::new(c2r)),
+        (c3w, BufReader::new(c3r)),
+    );
+    let (r1, r2, r3, out) = tokio::join!(srv1, srv2, srv3, client_fut);
+    let _ = (r1, r2, r3);
+    out
+}
+
 pub fn shared_with_history(path: std::path::PathBuf) -> Arc<Mutex<Shared>> {
     let cfg = Arc::new(base_cfg(Some(path.clone())));
     let store = Arc::new(HistoryStore::open(&path, 100).unwrap());
