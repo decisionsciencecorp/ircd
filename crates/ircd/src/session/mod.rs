@@ -11,7 +11,7 @@ use ircd_core::{
     ascii_casefold, field_has_control, numeric, server_notice, valid_channel_name, Command, Nick,
     RawLine,
 };
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Mutex;
 use tracing::info;
 
@@ -25,8 +25,15 @@ mod register;
 use cap::{advertised_caps, handle_authenticate, handle_cap, has_cap, SaslState};
 use register::try_register;
 
+/// Result of one cancel-safe buffered line read attempt (C9).
+enum LineOutcome {
+    Complete,
+    Oversized,
+    Eof,
+}
+
 pub async fn handle_client<R, W>(
-    mut reader: R,
+    reader: R,
     mut writer: W,
     peer: SocketAddr,
     shared: Arc<Mutex<Shared>>,
@@ -72,7 +79,8 @@ where
     let reg_deadline = crate::admission::registration_deadline(&cfg);
     let idle_deadline = crate::admission::idle_deadline(&cfg);
 
-    // Byte-at-a-time line assembly; outbound via per-id outbox (H-07/H-08).
+    // Buffered line I/O (C9 / Q-01): BufReader + read_until — no 50ms read_u8 tick.
+    // Outbound via per-id outbox (H-07/H-08). Deadlines use exact sleep, not polling.
 
     writer
         .write_all(
@@ -103,8 +111,9 @@ where
     let mut is_oper = false;
     let mut cap_negotiating = false;
     let mut enabled_caps: HashSet<String> = HashSet::from(["cap-notify".to_string()]);
-    let mut line_buf: Vec<u8> = Vec::with_capacity(256);
     let max_line = cfg.limits.max_line_bytes.max(64);
+    let mut reader = BufReader::with_capacity(max_line.min(8192).max(256), reader);
+    let mut line_buf: Vec<u8> = Vec::with_capacity(256);
     let mut channels: HashSet<String> = HashSet::new();
     let mut quit_reason: Option<String> = None;
     let mut quit_announced = false;
@@ -114,82 +123,122 @@ where
     let has_history = cfg.history.enabled;
     let cap_list = advertised_caps(has_accounts, has_history);
 
-    // Event-driven select! between member outbox and timed reads (H-07/H-08).
+    // Event-driven select! between member outbox and buffered reads (H-07/H-08 / C9).
     // Coverage must not dictate production scheduling — prefer outbox (biased).
-    loop {
-        let b = tokio::select! {
-            biased;
-            maybe = out_rx.recv() => {
-                match maybe {
-                    None => return Ok(()),
-                    Some(raw_line) => {
-                        let line = adapt_bus_line(&raw_line, &enabled_caps);
-                        writer.write_all(line.as_bytes()).await?;
-                        if let Some(n) = nick.as_deref() {
-                            if let Some(raw) =
-                                ircd_core::RawLine::parse(line.trim_end_matches(['\r', '\n']))
-                            {
-                                if raw.command_eq("KICK")
-                                    && raw.params.get(1).map(|t| t.as_str()) == Some(n)
+    // read_until is cancel-safe: partial bytes stay in line_buf when outbox wins.
+    'session: loop {
+        let raw = loop {
+            let deadline_at = if !registered {
+                reg_deadline.map(|d| session_start + d)
+            } else {
+                idle_deadline.map(|d| last_activity + d)
+            };
+
+            tokio::select! {
+                biased;
+                maybe = out_rx.recv() => {
+                    match maybe {
+                        None => return Ok(()),
+                        Some(raw_line) => {
+                            let line = adapt_bus_line(&raw_line, &enabled_caps);
+                            writer.write_all(line.as_bytes()).await?;
+                            if let Some(n) = nick.as_deref() {
+                                if let Some(raw) =
+                                    ircd_core::RawLine::parse(line.trim_end_matches(['\r', '\n']))
                                 {
-                                    if let Some(chan) = raw.params.first() {
-                                        channels.remove(chan);
+                                    if raw.command_eq("KICK")
+                                        && raw.params.get(1).map(|t| t.as_str()) == Some(n)
+                                    {
+                                        if let Some(chan) = raw.params.first() {
+                                            channels.remove(chan);
+                                        }
                                     }
                                 }
                             }
+                            continue;
                         }
-                        continue;
                     }
                 }
-            }
-            read = tokio::time::timeout(Duration::from_millis(50), reader.read_u8()) => {
-                match read {
-                    Ok(Ok(b)) => b,
-                    Ok(Err(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
-                        break;
+                outcome = async {
+                    loop {
+                        if line_buf.len() >= max_line {
+                            return Ok::<_, std::io::Error>(LineOutcome::Oversized);
+                        }
+                        let buf = reader.fill_buf().await?;
+                        if buf.is_empty() {
+                            return Ok(LineOutcome::Eof);
+                        }
+                        let room = max_line - line_buf.len();
+                        let chunk_len = buf.len().min(room);
+                        if let Some(pos) = buf[..chunk_len].iter().position(|&b| b == b'\n') {
+                            let take = pos + 1;
+                            line_buf.extend_from_slice(&buf[..take]);
+                            reader.consume(take);
+                            return Ok(LineOutcome::Complete);
+                        }
+                        line_buf.extend_from_slice(&buf[..chunk_len]);
+                        reader.consume(chunk_len);
+                        if line_buf.len() >= max_line {
+                            return Ok(LineOutcome::Oversized);
+                        }
+                        // Partial line in kernel/user buffer; loop for more (cancel-safe).
                     }
-                    Ok(Err(e)) => return Err(e.into()),
-                    Err(_) => {
-                if !registered {
-                    if let Some(limit) = reg_deadline {
-                        if session_start.elapsed() >= limit {
+                } => {
+                    match outcome {
+                        Ok(LineOutcome::Eof) => break 'session,
+                        Ok(LineOutcome::Oversized) => {
                             let _ = writer
-                                .write_all(b"ERROR :Closing Link: Registration timeout
-        ")
+                                .write_all(
+                                    format!(
+                                        "ERROR :Closing Link: [{peer}] (Input line too long)\r\n"
+                                    )
+                                    .as_bytes(),
+                                )
                                 .await;
-                            break;
+                            let _ = writer.flush().await;
+                            info!(%peer, max_line, "oversized IRC line; closing");
+                            break 'session;
                         }
-                    }
-                } else if let Some(limit) = idle_deadline {
-                    if last_activity.elapsed() >= limit {
-                        let _ = writer
-                            .write_all(b"ERROR :Closing Link: Idle timeout
-        ")
-                            .await;
-                        break;
+                        Ok(LineOutcome::Complete) => {
+                            let raw = String::from_utf8_lossy(&line_buf).into_owned();
+                            line_buf.clear();
+                            break raw;
+                        }
+                        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                            break 'session;
+                        }
+                        Err(e) => return Err(e.into()),
                     }
                 }
-                continue; // timed out — keep partial line_buf, poll outbox via select
+                _ = async {
+                    match deadline_at {
+                        Some(at) => {
+                            let now = Instant::now();
+                            if at > now {
+                                tokio::time::sleep(at.saturating_duration_since(now)).await;
+                            }
+                        }
+                        None => std::future::pending::<()>().await,
                     }
+                } => {
+                    if !registered {
+                        if reg_deadline.is_some() {
+                            let _ = writer
+                                .write_all(b"ERROR :Closing Link: Registration timeout\r\n")
+                                .await;
+                            break 'session;
+                        }
+                    } else if idle_deadline.is_some() {
+                        let _ = writer
+                            .write_all(b"ERROR :Closing Link: Idle timeout\r\n")
+                            .await;
+                        break 'session;
+                    }
+                    continue;
                 }
             }
         };
-        if line_buf.len() >= max_line {
-            let _ = writer
-                .write_all(
-                    format!("ERROR :Closing Link: [{peer}] (Input line too long)\r\n").as_bytes(),
-                )
-                .await;
-            let _ = writer.flush().await;
-            info!(%peer, max_line, "oversized IRC line; closing");
-            break;
-        }
-        line_buf.push(b);
-        if b != b'\n' {
-            continue;
-        }
-        let raw = String::from_utf8_lossy(&line_buf).into_owned();
-        line_buf.clear();
+
         // Simple recv flood guard (line count per window).
         if flood_window_start.elapsed() >= flood_window {
             flood_window_start = Instant::now();
