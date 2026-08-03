@@ -3,11 +3,15 @@
 
 mod common;
 
+use std::sync::Arc;
+
 use common::{
     read_until, shared_plain, shared_with_history, with_client, with_client_secure, with_two_clients,
 };
+use ircd::state::Shared;
 use tempfile::tempdir;
 use tokio::io::AsyncWriteExt;
+use tokio::sync::Mutex;
 
 #[tokio::test(flavor = "multi_thread")]
 async fn f1c_no_whox_in_isupport() {
@@ -175,6 +179,105 @@ async fn f3_chathistory_before_and_msgreftypes() {
             .unwrap();
         let _ = read_until(&mut r2, |l| l.iter().any(|x| x.contains("BATCH -") || x.contains("PRIVMSG"))).await;
         w1.write_all(b"QUIT :x\r\n").await.unwrap();
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn f1d_pass_rejects_wrong_password() {
+    let mut cfg = common::base_cfg(None);
+    cfg.server.password = "s3cret".into();
+    let shared = Arc::new(Mutex::new(Shared::new(Arc::new(cfg), None)));
+    with_client(shared, 74, |mut w, mut r| async move {
+        w.write_all(b"PASS wrong\r\nNICK n\r\nUSER u 0 * :U\r\nQUIT :x\r\n")
+            .await
+            .unwrap();
+        let lines = read_until(&mut r, |l| l.iter().any(|x| x.contains("464"))).await;
+        assert!(
+            lines.iter().any(|l| l.contains("464")),
+            "bad PASS → 464: {lines:?}"
+        );
+        assert!(
+            !lines.iter().any(|l| l.contains("001 ")),
+            "must not register after bad PASS: {lines:?}"
+        );
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn f3_chathistory_after_around_between_targets() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("f3b.db");
+    let shared = shared_with_history(path);
+    with_client(shared, 75, |mut w, mut r| async move {
+        w.write_all(
+            b"CAP LS\r\nCAP REQ :draft/chathistory batch\r\nNICK a\r\nUSER a 0 * :A\r\nCAP END\r\nJOIN #z\r\n",
+        )
+        .await
+        .unwrap();
+        let _ = read_until(&mut r, |l| l.iter().any(|x| x.contains("366"))).await;
+        for i in 0..6 {
+            w.write_all(format!("PRIVMSG #z :n{i}\r\n").as_bytes())
+                .await
+                .unwrap();
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+        w.write_all(
+            b"CHATHISTORY AFTER #z * 2\r\nCHATHISTORY AROUND #z * 3\r\nCHATHISTORY BETWEEN #z msgid=dsc1 msgid=dsc4 10\r\nCHATHISTORY TARGETS * 10\r\nQUIT :x\r\n",
+        )
+        .await
+        .unwrap();
+        let lines = read_until(&mut r, |l| {
+            l.iter().filter(|x| x.contains("BATCH -chathist")).count() >= 3
+                || l.iter().any(|x| x.contains("CHATHISTORY TARGETS"))
+        })
+        .await;
+        assert!(
+            lines.iter().any(|l| l.contains("PRIVMSG #z") || l.contains("TARGETS")),
+            "AFTER/AROUND/BETWEEN/TARGETS produce history: {lines:?}"
+        );
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn f2c_sasl_chunk_too_long_905() {
+    let shared = shared_plain();
+    with_client_secure(shared, 76, |mut w, mut r| async move {
+        w.write_all(b"CAP LS\r\nCAP REQ :sasl\r\nAUTHENTICATE PLAIN\r\n")
+            .await
+            .unwrap();
+        let _ = read_until(&mut r, |l| l.iter().any(|x| x == "AUTHENTICATE +")).await;
+        let long = format!("AUTHENTICATE {}\r\n", "A".repeat(401));
+        w.write_all(long.as_bytes()).await.unwrap();
+        w.write_all(b"NICK n\r\nUSER u 0 * :U\r\nCAP END\r\nQUIT :x\r\n")
+            .await
+            .unwrap();
+        let lines = read_until(&mut r, |l| l.iter().any(|x| x.contains("905"))).await;
+        assert!(
+            lines.iter().any(|l| l.contains("905")),
+            "AUTHENTICATE >400 → 905: {lines:?}"
+        );
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn f4_nonoper_kill_wallops_denied() {
+    let shared = shared_plain();
+    with_client(shared, 77, |mut w, mut r| async move {
+        w.write_all(b"NICK n\r\nUSER u 0 * :U\r\nKILL x :nope\r\nWALLOPS :nope\r\nQUIT :x\r\n")
+            .await
+            .unwrap();
+        let lines = read_until(&mut r, |l| {
+            l.iter().filter(|x| x.contains("481")).count() >= 2
+        })
+        .await;
+        assert!(
+            lines.iter().filter(|l| l.contains("481")).count() >= 2,
+            "non-oper KILL/WALLOPS → 481: {lines:?}"
+        );
     })
     .await;
 }

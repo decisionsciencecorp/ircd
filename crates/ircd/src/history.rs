@@ -617,6 +617,29 @@ mod tests {
     }
 
     #[test]
+    fn around_and_targets() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("ar.db");
+        let store = HistoryStore::open(&path, 100).unwrap();
+        let mut ids = Vec::new();
+        for i in 0..10 {
+            ids.push(store.append("#c", "p", &format!("{i}")).unwrap().id);
+        }
+        let around = store.around("#c", HistBound::MsgId(ids[5]), 4).unwrap();
+        assert!(!around.is_empty());
+        assert!(around.len() <= 4);
+        let targets = store.channels_with_history(10).unwrap();
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].0, "#c");
+        let after_ts = store
+            .after("#c", HistBound::TsMs(0), 3)
+            .unwrap();
+        assert_eq!(after_ts.len(), 3);
+        let before_none = store.before("#c", HistBound::None, 2).unwrap();
+        assert_eq!(before_none.len(), 2);
+    }
+
+    #[test]
     fn rfc3339_epoch() {
         assert_eq!(rfc3339_to_unix_ms("1970-01-01T00:00:00.000Z"), Some(0));
     }
