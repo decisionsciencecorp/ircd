@@ -774,15 +774,16 @@ where
                                         if over {
                                             Err(471)
                                         } else {
-                                            let snap = g
-                                                .names_snapshot(chan)
+                                            // Thin copy only — sort/@ format after lock drop (C10).
+                                            let thin = g
+                                                .names_thin(chan)
                                                 .expect("channel just joined");
-                                            Ok(Some((snap, topic)))
+                                            Ok(Some((thin, topic)))
                                         }
                                     }
                                 }
                             };
-                            let (names_snap, topic) = match join_result {
+                            let (names_thin, topic) = match join_result {
                                 Ok(None) => continue, // already a member
                                 Ok(Some(pair)) => pair,
                                 Err(405) => {
@@ -874,6 +875,8 @@ where
                                 }
                             }
                             // Split 353 payloads to wire size (ties C2 / max_line_bytes).
+                            // Sort/@ format happens here — Shared lock already dropped (C10).
+                            let names_snap = names_thin.into_names_snapshot();
                             let overhead = server_name.len() + nick_s.len() + chan.len() + 24; // " 353  =  :\r\n" plus margins
                             let max_payload =
                                 cfg.limits.max_line_bytes.saturating_sub(overhead).max(16);
@@ -1354,16 +1357,26 @@ where
                             continue;
                         }
                         let line = format!(":{prefix} KICK {chan} {target_nick} :{reason}\r\n");
-                        // Fanout to current members (incl. victim) before remove — H-07.
-                        {
-                            let mut g = shared.lock().await;
-                            if let Some(tid) = target_id {
-                                let mut ids: Vec<u64> =
-                                    g.channel_member_ids(chan.as_str(), conn_id);
+                        // C10: snapshot member ids under lock, fanout via cloned senders off lock,
+                        // then mutate membership — authz already decided above.
+                        if let Some(tid) = target_id {
+                            let ids = {
+                                let g = shared.lock().await;
+                                let mut ids = g.channel_member_ids(chan.as_str(), conn_id);
                                 if !ids.contains(&tid) {
                                     ids.push(tid);
                                 }
-                                let _ = g.fanout_ids(&ids, &line);
+                                ids
+                            };
+                            let senders = {
+                                let g = shared.lock().await;
+                                g.clone_outboxes_for(&ids)
+                            };
+                            for tx in senders {
+                                let _ = tx.try_send(line.clone());
+                            }
+                            {
+                                let mut g = shared.lock().await;
                                 if let Some(ch) = g.channel_mut(chan.as_str()) {
                                     ch.remove_member(tid);
                                     if ch.members.is_empty() {
@@ -1724,11 +1737,13 @@ where
                                 .collect()
                         };
                         for chan in targets {
-                            let snap = {
+                            let thin = {
                                 let g = shared.lock().await;
-                                g.names_snapshot(chan.as_str())
+                                g.names_thin(chan.as_str())
                             };
-                            if let Some(snap) = snap {
+                            if let Some(thin) = thin {
+                                // Format/split after lock drop (C10).
+                                let snap = thin.into_names_snapshot();
                                 let overhead = server_name.len() + nick_s.len() + chan.len() + 24;
                                 let max_payload =
                                     cfg.limits.max_line_bytes.saturating_sub(overhead).max(16);

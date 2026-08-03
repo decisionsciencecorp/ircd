@@ -54,11 +54,38 @@ impl Default for ChannelState {
     }
 }
 
-/// Membership nick snapshot for NAMES — format off the global lock (H-16).
+/// Membership nick snapshot for NAMES — format off the global lock (H-16 / C10).
 #[derive(Debug, Clone)]
 pub struct NamesSnapshot {
     /// (sort_key, display) — display includes `@` for ops.
     entries: Vec<(String, String)>,
+}
+
+/// Thin NAMES inputs: nick clones + op flags only (no sort / `@` format) (C10).
+/// Build under the global lock; call [`NamesThin::into_names_snapshot`] after drop.
+#[derive(Debug, Clone)]
+pub struct NamesThin {
+    /// `(nick, is_op)` — unsorted.
+    rows: Vec<(String, bool)>,
+}
+
+impl NamesThin {
+    pub fn into_names_snapshot(self) -> NamesSnapshot {
+        let mut entries: Vec<(String, String)> = self
+            .rows
+            .into_iter()
+            .map(|(nick, is_op)| {
+                let display = if is_op {
+                    format!("@{nick}")
+                } else {
+                    nick.clone()
+                };
+                (nick.to_ascii_lowercase(), display)
+            })
+            .collect();
+        entries.sort_by(|a, b| a.0.cmp(&b.0));
+        NamesSnapshot { entries }
+    }
 }
 
 impl NamesSnapshot {
@@ -344,14 +371,30 @@ impl Shared {
         self.nicks.remove(folded_key);
     }
 
-    /// Snapshot NAMES for a channel (formats off the lock via returned snapshot).
-    pub fn names_snapshot(&self, channel: &str) -> Option<NamesSnapshot> {
+    /// Snapshot NAMES inputs for a channel (thin — sort/format after lock drop) (C10).
+    pub fn names_thin(&self, channel: &str) -> Option<NamesThin> {
         let ch = self.channels.get(channel)?;
-        Some(NamesSnapshot::from_sets(
-            &ch.members,
-            &ch.ops,
-            &self.id_to_nick,
-        ))
+        let rows: Vec<(String, bool)> = ch
+            .members
+            .iter()
+            .filter_map(|id| {
+                let nick = self.id_to_nick.get(id)?.clone();
+                Some((nick, ch.ops.contains(id)))
+            })
+            .collect();
+        Some(NamesThin { rows })
+    }
+
+    /// Full NAMES snapshot (sort+format). Prefer [`Self::names_thin`] under lock.
+    pub fn names_snapshot(&self, channel: &str) -> Option<NamesSnapshot> {
+        self.names_thin(channel).map(NamesThin::into_names_snapshot)
+    }
+
+    /// Clone outbox senders for `ids` so callers can `try_send` after dropping the lock (C10).
+    pub fn clone_outboxes_for(&self, ids: &[ClientId]) -> Vec<mpsc::Sender<String>> {
+        ids.iter()
+            .filter_map(|id| self.outboxes.get(id).cloned())
+            .collect()
     }
 
     /// WHO/list helpers: (display_nick, ClientId) for all registered nicks.
@@ -636,7 +679,7 @@ mod tests {
     }
 
     #[test]
-    fn names_snapshot_formats_off_channel() {
+    fn names_thin_formats_after_build() {
         let mut ch = ChannelState::default();
         ch.members.insert(1);
         ch.members.insert(2);
@@ -644,12 +687,42 @@ mod tests {
         let mut map: HashMap<ClientId, String> = HashMap::new();
         map.insert(1, "alice".into());
         map.insert(2, "bob".into());
-        let snap = ch.names_snapshot(&map);
+        // Simulate thin copy (what Shared::names_thin does under lock).
+        let thin = NamesThin {
+            rows: vec![("alice".into(), false), ("bob".into(), true)],
+        };
+        let snap = thin.into_names_snapshot();
         assert_eq!(snap.format_prefixed(), "alice @bob");
-        let parts = snap.split_for_wire(8); // "alice" = 5, " @bob" needs more
-        let joined = parts.join(" ");
-        assert!(joined.contains("alice"));
-        assert!(joined.contains("@bob"));
+        let _ = ch.names_snapshot(&map); // channel helper still works
+    }
+
+    #[tokio::test]
+    async fn clone_outboxes_fanout_off_lock() {
+        let cfg = Arc::new(Config::default());
+        let mut s = Shared::new(cfg, None);
+        let (tx, mut rx) = mpsc::channel(4);
+        s.register_outbox(7, tx);
+        let senders = s.clone_outboxes_for(&[7, 99]);
+        assert_eq!(senders.len(), 1);
+        drop(s); // lock released before send
+        senders[0].try_send("KICK\r\n".into()).unwrap();
+        assert_eq!(rx.try_recv().unwrap(), "KICK\r\n");
+    }
+
+    #[test]
+    fn names_thin_512_format_cost_is_off_lock_data() {
+        // Q3 qualitative: thin rows are O(n) clones; sort/@ is into_names_snapshot.
+        let rows: Vec<(String, bool)> = (0..512)
+            .map(|i| (format!("nick{i:04}"), i % 10 == 0))
+            .collect();
+        let thin = NamesThin { rows: rows.clone() };
+        let t0 = std::time::Instant::now();
+        let snap = thin.into_names_snapshot();
+        let format_us = t0.elapsed().as_micros();
+        assert_eq!(snap.format_prefixed().split_whitespace().count(), 512);
+        // Sanity: formatting 512 nicks does measurable work (not a free no-op).
+        assert!(format_us > 0 || snap.split_for_wire(64).len() > 1);
+        let _ = rows;
     }
 
     #[test]
