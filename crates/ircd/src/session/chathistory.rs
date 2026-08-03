@@ -6,8 +6,8 @@ use anyhow::Result;
 use ircd_core::tags::{adapt_bus_line, prepend_tag, unix_ms_to_rfc3339};
 use tokio::io::AsyncWriteExt;
 
-use crate::history::{HistBound, HistMsg, HistQuery, HistoryStore};
 use super::cap::has_cap;
+use crate::history::{HistBound, HistMsg, HistQuery, HistoryStore};
 
 pub(super) fn is_targets(params: &[String]) -> bool {
     params
@@ -144,11 +144,7 @@ mod tests {
 
     #[test]
     fn parse_sub_verbs() {
-        assert!(is_targets(&[
-            "TARGETS".into(),
-            "*".into(),
-            "10".into()
-        ]));
+        assert!(is_targets(&["TARGETS".into(), "*".into(), "10".into()]));
         let (q, ch, lim) = parse_sub(&["TARGETS".into(), "*".into(), "10".into()]).unwrap();
         assert!(matches!(q, HistQuery::Latest));
         assert!(ch.is_empty());
@@ -171,16 +167,20 @@ mod tests {
             parse_sub(&["AROUND".into(), "#c".into(), "*".into(), "3".into()]).is_none(),
             "AROUND * rejected"
         );
-        let (q, _, _) =
-            parse_sub(&["AROUND".into(), "#c".into(), "msgid=dsc2".into(), "3".into()]).unwrap();
+        let (q, _, _) = parse_sub(&[
+            "AROUND".into(),
+            "#c".into(),
+            "msgid=dsc2".into(),
+            "3".into(),
+        ])
+        .unwrap();
         assert!(matches!(q, HistQuery::Around(HistBound::MsgId(2))));
         let (q, _, _) =
             parse_sub(&["AFTER".into(), "#c".into(), "dsc2".into(), "5".into()]).unwrap();
         assert!(matches!(q, HistQuery::After(HistBound::MsgId(2))));
         let (q, _, _) = parse_sub(&["BEFORE".into(), "#c".into(), "*".into()]).unwrap();
         assert!(matches!(q, HistQuery::Before(_)));
-        let (q, _, _) =
-            parse_sub(&["LATEST".into(), "#c".into(), "*".into(), "1".into()]).unwrap();
+        let (q, _, _) = parse_sub(&["LATEST".into(), "#c".into(), "*".into(), "1".into()]).unwrap();
         assert!(matches!(q, HistQuery::Latest));
         assert!(parse_sub(&["NOPE".into(), "#c".into()]).is_none());
         assert!(

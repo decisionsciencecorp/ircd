@@ -300,11 +300,15 @@ async fn bare_ping_409_and_quit_error() {
         })
         .await;
         assert!(
-            lines.iter().any(|l| l.contains("409") && l.contains("No origin")),
+            lines
+                .iter()
+                .any(|l| l.contains("409") && l.contains("No origin")),
             "bare PING must 409: {lines:?}"
         );
         assert!(
-            lines.iter().any(|l| l.contains("ERROR") && l.contains("Closing Link")),
+            lines
+                .iter()
+                .any(|l| l.contains("ERROR") && l.contains("Closing Link")),
             "QUIT must ERROR: {lines:?}"
         );
     })
@@ -346,7 +350,8 @@ async fn error_exit_clears_nick_for_reuse() {
             .await
             .unwrap();
         let _ = read_until(&mut r1, |l| {
-            l.iter().any(|x| x.contains("QUIT") || x.contains("JOIN") || x.contains("ERROR"))
+            l.iter()
+                .any(|x| x.contains("QUIT") || x.contains("JOIN") || x.contains("ERROR"))
         })
         .await;
         // Allow Drop cleanup spawn to run

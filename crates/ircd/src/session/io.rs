@@ -18,7 +18,6 @@ pub(super) enum IoEvent {
     Deadline,
 }
 
-
 pub(super) async fn read_line_outcome<R: tokio::io::AsyncBufRead + Unpin>(
     reader: &mut R,
     line_buf: &mut Vec<u8>,
@@ -95,4 +94,3 @@ mod tests {
         assert!(session_deadline_at(true, t, t, Some(Duration::from_secs(1)), None).is_none());
     }
 }
-

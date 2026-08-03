@@ -33,7 +33,8 @@ async fn buffered_io_privmsg_and_outbox_interleave() {
         w2.write_all(b"PRIVMSG #c9 :from-b\r\n").await.unwrap();
 
         let a_lines = read_until(&mut r1, |l| {
-            l.iter().any(|x| x.contains("PRIVMSG #c9") && x.contains("from-b"))
+            l.iter()
+                .any(|x| x.contains("PRIVMSG #c9") && x.contains("from-b"))
         })
         .await;
         assert!(
@@ -104,7 +105,10 @@ async fn buffered_io_oversized_flood_and_deadlines() {
                 .unwrap();
         }
         let lines = read_until(&mut r, |l| l.iter().any(|x| x.contains("Excess Flood"))).await;
-        assert!(lines.iter().any(|l| l.contains("Excess Flood")), "{lines:?}");
+        assert!(
+            lines.iter().any(|l| l.contains("Excess Flood")),
+            "{lines:?}"
+        );
     })
     .await;
 

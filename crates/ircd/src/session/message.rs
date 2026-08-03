@@ -7,7 +7,11 @@ use ircd_core::RawLine;
 
 use super::cap::has_cap;
 
-pub(super) fn relay_client_tags(line: String, msg: &RawLine, enabled_caps: &HashSet<String>) -> String {
+pub(super) fn relay_client_tags(
+    line: String,
+    msg: &RawLine,
+    enabled_caps: &HashSet<String>,
+) -> String {
     if !has_cap(enabled_caps, "message-tags") {
         return line;
     }

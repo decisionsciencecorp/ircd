@@ -609,9 +609,7 @@ where
                 let why = quit_reason.as_deref().unwrap_or("Client Quit");
                 let n = nick.as_deref().unwrap_or("*");
                 writer
-                    .write_all(
-                        format!("ERROR :Closing Link: {n} (Quit: {why})\r\n").as_bytes(),
-                    )
+                    .write_all(format!("ERROR :Closing Link: {n} (Quit: {why})\r\n").as_bytes())
                     .await?;
                 writer.flush().await?;
                 quit_announced = true;
@@ -839,13 +837,11 @@ where
                                             Err(471)
                                         } else {
                                             // Thin copy only — sort/@ format after lock drop (C10).
-                                            let thin = g
-                                                .names_thin(chan)
-                                                .expect("channel just joined");
+                                            let thin =
+                                                g.names_thin(chan).expect("channel just joined");
                                             // Snapshot away-notify recipients under the same lock.
                                             let away_join = g.away_message(conn_id).map(|m| {
-                                                let peers =
-                                                    g.away_notify_in_channel(chan, conn_id);
+                                                let peers = g.away_notify_in_channel(chan, conn_id);
                                                 let senders = g.clone_outboxes_for(&peers);
                                                 (senders, m.to_string())
                                             });
@@ -1008,7 +1004,8 @@ where
                     }
 
                     Command::Chathistory { .. } => {
-                        let Some((kind, target, limit)) = chathistory::parse_sub(&msg.params) else {
+                        let Some((kind, target, limit)) = chathistory::parse_sub(&msg.params)
+                        else {
                             writer
                                 .write_all(
                                     numeric(
@@ -1264,11 +1261,11 @@ where
                                 line = prepend_tag(&line, "account", acc);
                             }
                             line = relay_client_tags(line, &msg, &enabled_caps);
-                            let _ = shared.lock().await.fanout_channel(
-                                target.as_str(),
-                                &line,
-                                conn_id,
-                            );
+                            let _ =
+                                shared
+                                    .lock()
+                                    .await
+                                    .fanout_channel(target.as_str(), &line, conn_id);
                         } else {
                             let tid = {
                                 let g = shared.lock().await;
@@ -2157,7 +2154,8 @@ where
                                 (nick, user, chans, away, account, is_op)
                             })
                         };
-                        let Some((who_nick, who_user, chans, away, who_acct, who_oper)) = info else {
+                        let Some((who_nick, who_user, chans, away, who_acct, who_oper)) = info
+                        else {
                             writer
                                 .write_all(
                                     numeric(
@@ -2177,7 +2175,13 @@ where
                                     server_name,
                                     311,
                                     nick_s,
-                                    &[who_nick.as_str(), who_user.as_str(), "dsc.local", "*", "realname"],
+                                    &[
+                                        who_nick.as_str(),
+                                        who_user.as_str(),
+                                        "dsc.local",
+                                        "*",
+                                        "realname",
+                                    ],
                                 )
                                 .as_bytes(),
                             )
@@ -2185,13 +2189,8 @@ where
                         if let Some(msg) = away.as_deref() {
                             writer
                                 .write_all(
-                                    numeric(
-                                        server_name,
-                                        301,
-                                        nick_s,
-                                        &[who_nick.as_str(), msg],
-                                    )
-                                    .as_bytes(),
+                                    numeric(server_name, 301, nick_s, &[who_nick.as_str(), msg])
+                                        .as_bytes(),
                                 )
                                 .await?;
                         }
@@ -2410,7 +2409,6 @@ where
                         continue;
                     }
 
-
                     Command::Userhost { nicks } => {
                         let parts = {
                             let g = shared.lock().await;
@@ -2432,7 +2430,9 @@ where
                         };
                         let body = parts.join(" ");
                         writer
-                            .write_all(numeric(server_name, 302, nick_s, &[body.as_str()]).as_bytes())
+                            .write_all(
+                                numeric(server_name, 302, nick_s, &[body.as_str()]).as_bytes(),
+                            )
                             .await?;
                         continue;
                     }
@@ -2448,7 +2448,9 @@ where
                                 .join(" ")
                         };
                         writer
-                            .write_all(numeric(server_name, 303, nick_s, &[online.as_str()]).as_bytes())
+                            .write_all(
+                                numeric(server_name, 303, nick_s, &[online.as_str()]).as_bytes(),
+                            )
                             .await?;
                         continue;
                     }
@@ -2461,13 +2463,8 @@ where
                         let stamp = format!("{now}");
                         writer
                             .write_all(
-                                numeric(
-                                    server_name,
-                                    391,
-                                    nick_s,
-                                    &[server_name, stamp.as_str()],
-                                )
-                                .as_bytes(),
+                                numeric(server_name, 391, nick_s, &[server_name, stamp.as_str()])
+                                    .as_bytes(),
                             )
                             .await?;
                         continue;
@@ -2487,13 +2484,17 @@ where
                             .await?;
                         writer
                             .write_all(
-                                numeric(server_name, 374, nick_s, &["End of /INFO list"]).as_bytes(),
+                                numeric(server_name, 374, nick_s, &["End of /INFO list"])
+                                    .as_bytes(),
                             )
                             .await?;
                         continue;
                     }
 
-                    Command::Kill { nick: kill_nick, reason } => {
+                    Command::Kill {
+                        nick: kill_nick,
+                        reason,
+                    } => {
                         if !is_oper {
                             writer
                                 .write_all(
@@ -2751,7 +2752,9 @@ mod tests {
     fn session_deadline_at_reg_vs_idle() {
         let start = Instant::now();
         let act = start + Duration::from_secs(5);
-        assert!(session_deadline_at(false, start, act, None, Some(Duration::from_secs(1))).is_none());
+        assert!(
+            session_deadline_at(false, start, act, None, Some(Duration::from_secs(1))).is_none()
+        );
         let reg = session_deadline_at(
             false,
             start,

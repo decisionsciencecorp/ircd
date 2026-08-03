@@ -465,10 +465,7 @@ impl HistoryStore {
         .context("history query join")?
     }
 
-    pub async fn targets_async(
-        self: &Arc<Self>,
-        limit: usize,
-    ) -> Result<Vec<(String, i64, i64)>> {
+    pub async fn targets_async(self: &Arc<Self>, limit: usize) -> Result<Vec<(String, i64, i64)>> {
         let store = Arc::clone(self);
         tokio::task::spawn_blocking(move || store.channels_with_history(limit))
             .await
@@ -581,7 +578,10 @@ mod tests {
             .between("#c", HistBound::MsgId(ids[2]), HistBound::MsgId(ids[5]), 10)
             .unwrap();
         assert_eq!(between.len(), 4);
-        assert_eq!(HistoryStore::parse_selector("msgid=dsc7"), HistBound::MsgId(7));
+        assert_eq!(
+            HistoryStore::parse_selector("msgid=dsc7"),
+            HistBound::MsgId(7)
+        );
         assert_eq!(HistoryStore::parse_selector("*"), HistBound::None);
         let ts = unix_ms_to_rfc3339(store.latest("#c", 1).unwrap()[0].ts_ms);
         assert!(matches!(
@@ -660,9 +660,7 @@ mod tests {
         let targets = store.channels_with_history(10).unwrap();
         assert_eq!(targets.len(), 1);
         assert_eq!(targets[0].0, "#c");
-        let after_ts = store
-            .after("#c", HistBound::TsMs(0), 3)
-            .unwrap();
+        let after_ts = store.after("#c", HistBound::TsMs(0), 3).unwrap();
         assert_eq!(after_ts.len(), 3);
         let before_none = store.before("#c", HistBound::None, 2).unwrap();
         assert_eq!(before_none.len(), 2);
@@ -682,10 +680,7 @@ mod tests {
         assert_eq!(HistoryStore::parse_selector("dsc9"), HistBound::MsgId(9));
         assert_eq!(HistoryStore::parse_selector("nope"), HistBound::None);
         assert!(matches!(
-            HistoryStore::parse_selector(&format!(
-                "time={}",
-                unix_ms_to_rfc3339(ts0)
-            )),
+            HistoryStore::parse_selector(&format!("time={}", unix_ms_to_rfc3339(ts0))),
             HistBound::TsMs(_)
         ));
         assert!(matches!(

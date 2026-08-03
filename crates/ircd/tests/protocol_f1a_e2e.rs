@@ -32,17 +32,13 @@ async fn away_set_clear_self_numerics() {
 async fn away_notify_peer_on_set_and_clear() {
     let shared = shared_plain();
     with_two_clients(shared, |(mut w1, mut r1), (mut w2, mut r2)| async move {
-        w1.write_all(
-            b"CAP REQ :away-notify\r\nCAP END\r\nNICK a\r\nUSER a 0 * :A\r\nJOIN #aw\r\n",
-        )
-        .await
-        .unwrap();
+        w1.write_all(b"CAP REQ :away-notify\r\nCAP END\r\nNICK a\r\nUSER a 0 * :A\r\nJOIN #aw\r\n")
+            .await
+            .unwrap();
         let _ = read_until(&mut r1, |l| l.iter().any(|x| x.contains("366"))).await;
-        w2.write_all(
-            b"CAP REQ :away-notify\r\nCAP END\r\nNICK b\r\nUSER b 0 * :B\r\nJOIN #aw\r\n",
-        )
-        .await
-        .unwrap();
+        w2.write_all(b"CAP REQ :away-notify\r\nCAP END\r\nNICK b\r\nUSER b 0 * :B\r\nJOIN #aw\r\n")
+            .await
+            .unwrap();
         let _ = read_until(&mut r2, |l| l.iter().any(|x| x.contains("366"))).await;
         let _ = read_until(&mut r1, |l| l.iter().any(|x| x.contains("JOIN"))).await;
 
@@ -63,7 +59,9 @@ async fn away_notify_peer_on_set_and_clear() {
         let clear_lines = read_until(&mut r1, |l| {
             l.iter().any(|x| {
                 x.contains(" AWAY") && !x.contains(':') && !x.contains("306") && !x.contains("305")
-            }) || l.iter().any(|x| x.ends_with("AWAY") || x.contains("AWAY\r"))
+            }) || l
+                .iter()
+                .any(|x| x.ends_with("AWAY") || x.contains("AWAY\r"))
         })
         .await;
         assert!(
@@ -135,7 +133,10 @@ async fn whois_and_privmsg_surface_away_without_cap() {
             l.iter().filter(|x| x.contains("301")).count() >= 2
         })
         .await;
-        let threes = lines.iter().filter(|l| l.contains("301") && l.contains("zzz")).count();
+        let threes = lines
+            .iter()
+            .filter(|l| l.contains("301") && l.contains("zzz"))
+            .count();
         assert!(
             threes >= 2,
             "expected WHOIS+PRIVMSG 301 with away text, got {threes}: {lines:?}"

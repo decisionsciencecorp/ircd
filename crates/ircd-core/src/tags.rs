@@ -436,7 +436,10 @@ mod tests {
     fn validate_tag_block_size_and_keys() {
         assert_eq!(validate_tag_block(None), None);
         assert_eq!(validate_tag_block(Some("+foo=bar")), None);
-        assert_eq!(validate_tag_block(Some(&"x".repeat(MAX_TAG_BLOCK_BYTES + 1))), Some(417));
+        assert_eq!(
+            validate_tag_block(Some(&"x".repeat(MAX_TAG_BLOCK_BYTES + 1))),
+            Some(417)
+        );
         assert_eq!(validate_tag_block(Some("=novalue")), Some(417));
     }
 

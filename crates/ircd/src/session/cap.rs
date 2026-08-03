@@ -99,7 +99,9 @@ pub(crate) fn has_cap(enabled: &HashSet<String>, name: &str) -> bool {
 pub(crate) enum SaslState {
     Idle,
     /// Accumulating AUTHENTICATE base64 chunks (IRCv3 ≤400 octets per line).
-    AwaitPlain { buf: String },
+    AwaitPlain {
+        buf: String,
+    },
 }
 
 const SASL_CHUNK_MAX: usize = 400;
@@ -254,13 +256,8 @@ where
                     *sasl_state = SaslState::Idle;
                     writer
                         .write_all(
-                            numeric(
-                                server_name,
-                                905,
-                                nick_s,
-                                &["SASL message too long"],
-                            )
-                            .as_bytes(),
+                            numeric(server_name, 905, nick_s, &["SASL message too long"])
+                                .as_bytes(),
                         )
                         .await?;
                     return Ok(());
@@ -270,13 +267,8 @@ where
                     *sasl_state = SaslState::Idle;
                     writer
                         .write_all(
-                            numeric(
-                                server_name,
-                                905,
-                                nick_s,
-                                &["SASL message too long"],
-                            )
-                            .as_bytes(),
+                            numeric(server_name, 905, nick_s, &["SASL message too long"])
+                                .as_bytes(),
                         )
                         .await?;
                     return Ok(());
@@ -323,10 +315,7 @@ where
                 return Ok(());
             };
             *account = Some(acc.name.clone());
-            shared
-                .lock()
-                .await
-                .set_account(conn_id, acc.name.clone());
+            shared.lock().await.set_account(conn_id, acc.name.clone());
             let user_s = user.unwrap_or("user");
             let host = "dsc.local";
             let full = format!("{nick_s}!{user_s}@{host}");

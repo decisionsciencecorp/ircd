@@ -277,10 +277,9 @@ impl Command {
             | Self::Names { .. }
             | Self::List { .. } => "channel",
             Self::Privmsg { .. } | Self::Notice { .. } | Self::Tagmsg { .. } => "message",
-            Self::Who { .. }
-            | Self::Whois { .. }
-            | Self::Userhost { .. }
-            | Self::Ison { .. } => "query",
+            Self::Who { .. } | Self::Whois { .. } | Self::Userhost { .. } | Self::Ison { .. } => {
+                "query"
+            }
             Self::Chathistory { .. } => "history",
             Self::Unknown { .. } => "unknown",
         }

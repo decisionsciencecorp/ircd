@@ -505,10 +505,7 @@ impl Shared {
     }
 
     /// Clone outbox senders for `ids` so callers can `try_send` after dropping the lock (C10).
-    pub fn clone_outboxes_for(
-        &self,
-        ids: &[ClientId],
-    ) -> Vec<mpsc::Sender<std::sync::Arc<str>>> {
+    pub fn clone_outboxes_for(&self, ids: &[ClientId]) -> Vec<mpsc::Sender<std::sync::Arc<str>>> {
         ids.iter()
             .filter_map(|id| self.outboxes.get(id).cloned())
             .collect()

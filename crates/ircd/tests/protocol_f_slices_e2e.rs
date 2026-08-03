@@ -6,7 +6,8 @@ mod common;
 use std::sync::Arc;
 
 use common::{
-    read_until, shared_plain, shared_with_history, with_client, with_client_secure, with_two_clients,
+    read_until, shared_plain, shared_with_history, with_client, with_client_secure,
+    with_two_clients,
 };
 use ircd::state::Shared;
 use tempfile::tempdir;
@@ -116,7 +117,9 @@ async fn f2c_sasl_reauth_gets_907() {
             .unwrap();
         let _ = read_until(&mut r, |l| l.iter().any(|x| x == "AUTHENTICATE +")).await;
         // alice\0alice\0secret
-        w.write_all(b"AUTHENTICATE AGFsaWNlAHNlY3JldA==\r\n").await.unwrap();
+        w.write_all(b"AUTHENTICATE AGFsaWNlAHNlY3JldA==\r\n")
+            .await
+            .unwrap();
         let _ = read_until(&mut r, |l| l.iter().any(|x| x.contains("903"))).await;
         w.write_all(b"AUTHENTICATE PLAIN\r\nNICK n\r\nUSER u 0 * :U\r\nCAP END\r\nQUIT :x\r\n")
             .await
@@ -290,13 +293,16 @@ async fn f4_kill_and_wallops() {
             .await
             .unwrap();
         let _ = read_until(&mut r1, |l| l.iter().any(|x| x.contains("381"))).await;
-        w2.write_all(b"NICK victim\r\nUSER v 0 * :V\r\n").await.unwrap();
+        w2.write_all(b"NICK victim\r\nUSER v 0 * :V\r\n")
+            .await
+            .unwrap();
         let _ = read_until(&mut r2, |l| l.iter().any(|x| x.contains("376"))).await;
         w1.write_all(b"WALLOPS :heads up\r\nKILL victim :bye\r\nQUIT :x\r\n")
             .await
             .unwrap();
         let vlines = read_until(&mut r2, |l| {
-            l.iter().any(|x| x.starts_with("ERROR ") || x.contains("KILL"))
+            l.iter()
+                .any(|x| x.starts_with("ERROR ") || x.contains("KILL"))
         })
         .await;
         assert!(
@@ -307,7 +313,9 @@ async fn f4_kill_and_wallops() {
         );
         let olines = read_until(&mut r1, |l| l.iter().any(|x| x.contains("WALLOPS"))).await;
         assert!(
-            olines.iter().any(|l| l.contains("WALLOPS") && l.contains("heads up")),
+            olines
+                .iter()
+                .any(|l| l.contains("WALLOPS") && l.contains("heads up")),
             "oper sees WALLOPS: {olines:?}"
         );
     })
@@ -384,11 +392,14 @@ async fn f3_join_auto_replay_without_chathistory_cap() {
             .await
             .unwrap();
         let lines = read_until(&mut r2, |l| {
-            l.iter().any(|x| x.contains("PRIVMSG #r") && x.contains("old"))
+            l.iter()
+                .any(|x| x.contains("PRIVMSG #r") && x.contains("old"))
         })
         .await;
         assert!(
-            lines.iter().any(|l| l.contains("PRIVMSG #r") && l.contains("old")),
+            lines
+                .iter()
+                .any(|l| l.contains("PRIVMSG #r") && l.contains("old")),
             "JOIN auto-replay: {lines:?}"
         );
         w1.write_all(b"QUIT :x\r\n").await.unwrap();
@@ -469,7 +480,9 @@ async fn f1d_pass_accepts_correct_password() {
 async fn audit_privmsg_rejects_control_chars() {
     let shared = shared_plain();
     with_client(shared, 83, |mut w, mut r| async move {
-        w.write_all(b"NICK n\r\nUSER u 0 * :U\r\nJOIN #c\r\n").await.unwrap();
+        w.write_all(b"NICK n\r\nUSER u 0 * :U\r\nJOIN #c\r\n")
+            .await
+            .unwrap();
         let _ = read_until(&mut r, |l| l.iter().any(|x| x.contains("366"))).await;
         // Embedded CR in trailing — must 461, not fan out / store.
         w.write_all(b"PRIVMSG #c :hi\rinjected\r\nQUIT :x\r\n")
@@ -477,7 +490,9 @@ async fn audit_privmsg_rejects_control_chars() {
             .unwrap();
         let lines = read_until(&mut r, |l| l.iter().any(|x| x.contains("461"))).await;
         assert!(
-            lines.iter().any(|l| l.contains("461") && l.contains("Invalid message")),
+            lines
+                .iter()
+                .any(|l| l.contains("461") && l.contains("Invalid message")),
             "control in PRIVMSG → 461: {lines:?}"
         );
     })
@@ -495,7 +510,10 @@ async fn audit_history_ads_require_live_store() {
             .await
             .unwrap();
         let lines = read_until(&mut r, |l| l.iter().any(|x| x.contains("001 "))).await;
-        let cap_ls = lines.iter().find(|l| l.contains("CAP") && l.contains("LS")).cloned();
+        let cap_ls = lines
+            .iter()
+            .find(|l| l.contains("CAP") && l.contains("LS"))
+            .cloned();
         assert!(
             cap_ls
                 .as_ref()
@@ -537,7 +555,9 @@ async fn audit_around_star_and_userhost_away() {
             .unwrap();
         let lines = read_until(&mut r, |l| l.iter().any(|x| x.contains("302"))).await;
         assert!(
-            lines.iter().any(|l| l.contains("302") && l.contains("n=-u@")),
+            lines
+                .iter()
+                .any(|l| l.contains("302") && l.contains("n=-u@")),
             "away USERHOST → =-: {lines:?}"
         );
     })

@@ -10,17 +10,13 @@ async fn tagmsg_relays_client_plus_tag_with_message_tags() {
     // Q1: both ends with message-tags → TAGMSG + client tag preserved.
     let shared = shared_plain();
     with_two_clients(shared, |(mut w1, mut r1), (mut w2, mut r2)| async move {
-        w1.write_all(
-            b"CAP REQ :message-tags\r\nCAP END\r\nNICK a\r\nUSER a 0 * :A\r\nJOIN #t\r\n",
-        )
-        .await
-        .unwrap();
+        w1.write_all(b"CAP REQ :message-tags\r\nCAP END\r\nNICK a\r\nUSER a 0 * :A\r\nJOIN #t\r\n")
+            .await
+            .unwrap();
         let _ = read_until(&mut r1, |l| l.iter().any(|x| x.contains("366"))).await;
-        w2.write_all(
-            b"CAP REQ :message-tags\r\nCAP END\r\nNICK b\r\nUSER b 0 * :B\r\nJOIN #t\r\n",
-        )
-        .await
-        .unwrap();
+        w2.write_all(b"CAP REQ :message-tags\r\nCAP END\r\nNICK b\r\nUSER b 0 * :B\r\nJOIN #t\r\n")
+            .await
+            .unwrap();
         let _ = read_until(&mut r2, |l| l.iter().any(|x| x.contains("366"))).await;
         let _ = read_until(&mut r1, |l| l.iter().any(|x| x.contains("JOIN"))).await;
 
@@ -66,17 +62,13 @@ async fn client_plus_tag_on_privmsg_preserved() {
     // Q3: @+… PRIVMSG fanout keeps client tag when both have message-tags.
     let shared = shared_plain();
     with_two_clients(shared, |(mut w1, mut r1), (mut w2, mut r2)| async move {
-        w1.write_all(
-            b"CAP REQ :message-tags\r\nCAP END\r\nNICK a\r\nUSER a 0 * :A\r\nJOIN #p\r\n",
-        )
-        .await
-        .unwrap();
+        w1.write_all(b"CAP REQ :message-tags\r\nCAP END\r\nNICK a\r\nUSER a 0 * :A\r\nJOIN #p\r\n")
+            .await
+            .unwrap();
         let _ = read_until(&mut r1, |l| l.iter().any(|x| x.contains("366"))).await;
-        w2.write_all(
-            b"CAP REQ :message-tags\r\nCAP END\r\nNICK b\r\nUSER b 0 * :B\r\nJOIN #p\r\n",
-        )
-        .await
-        .unwrap();
+        w2.write_all(b"CAP REQ :message-tags\r\nCAP END\r\nNICK b\r\nUSER b 0 * :B\r\nJOIN #p\r\n")
+            .await
+            .unwrap();
         let _ = read_until(&mut r2, |l| l.iter().any(|x| x.contains("366"))).await;
         let _ = read_until(&mut r1, |l| l.iter().any(|x| x.contains("JOIN"))).await;
 
