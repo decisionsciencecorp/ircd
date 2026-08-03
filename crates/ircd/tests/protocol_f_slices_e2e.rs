@@ -224,7 +224,7 @@ async fn f3_chathistory_after_around_between_targets() {
         }
         tokio::time::sleep(std::time::Duration::from_millis(40)).await;
         w.write_all(
-            b"CHATHISTORY AFTER #z * 2\r\nCHATHISTORY AROUND #z * 3\r\nCHATHISTORY BETWEEN #z msgid=dsc1 msgid=dsc4 10\r\nCHATHISTORY TARGETS * 10\r\nQUIT :x\r\n",
+            b"CHATHISTORY AFTER #z * 2\r\nCHATHISTORY AROUND #z msgid=dsc3 3\r\nCHATHISTORY BETWEEN #z msgid=dsc1 msgid=dsc4 10\r\nCHATHISTORY TARGETS * 10\r\nQUIT :x\r\n",
         )
         .await
         .unwrap();
@@ -460,6 +460,85 @@ async fn f1d_pass_accepts_correct_password() {
         assert!(
             lines.iter().any(|l| l.contains("001 ")),
             "good PASS → register: {lines:?}"
+        );
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn audit_privmsg_rejects_control_chars() {
+    let shared = shared_plain();
+    with_client(shared, 83, |mut w, mut r| async move {
+        w.write_all(b"NICK n\r\nUSER u 0 * :U\r\nJOIN #c\r\n").await.unwrap();
+        let _ = read_until(&mut r, |l| l.iter().any(|x| x.contains("366"))).await;
+        // Embedded CR in trailing — must 461, not fan out / store.
+        w.write_all(b"PRIVMSG #c :hi\rinjected\r\nQUIT :x\r\n")
+            .await
+            .unwrap();
+        let lines = read_until(&mut r, |l| l.iter().any(|x| x.contains("461"))).await;
+        assert!(
+            lines.iter().any(|l| l.contains("461") && l.contains("Invalid message")),
+            "control in PRIVMSG → 461: {lines:?}"
+        );
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn audit_history_ads_require_live_store() {
+    // cfg.history.enabled defaults true, but no store attached → no CAP/005 history ads.
+    let mut cfg = common::base_cfg(None);
+    cfg.history.enabled = true;
+    let shared = Arc::new(Mutex::new(Shared::new(Arc::new(cfg), None)));
+    with_client(shared, 84, |mut w, mut r| async move {
+        w.write_all(b"CAP LS\r\nNICK n\r\nUSER u 0 * :U\r\nCAP END\r\nQUIT :x\r\n")
+            .await
+            .unwrap();
+        let lines = read_until(&mut r, |l| l.iter().any(|x| x.contains("001 "))).await;
+        let cap_ls = lines.iter().find(|l| l.contains("CAP") && l.contains("LS")).cloned();
+        assert!(
+            cap_ls
+                .as_ref()
+                .map(|l| !l.contains("draft/chathistory"))
+                .unwrap_or(false),
+            "no live store → no draft/chathistory: {cap_ls:?}"
+        );
+        assert!(
+            !lines.iter().any(|l| l.contains("CHATHISTORY=")),
+            "no live store → no 005 CHATHISTORY=: {lines:?}"
+        );
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn audit_around_star_and_userhost_away() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("aud.db");
+    let shared = shared_with_history(path);
+    with_client(shared.clone(), 85, |mut w, mut r| async move {
+        w.write_all(
+            b"CAP LS\r\nCAP REQ :draft/chathistory batch\r\nNICK a\r\nUSER a 0 * :A\r\nCAP END\r\nJOIN #z\r\nPRIVMSG #z :x\r\nCHATHISTORY AROUND #z * 3\r\nQUIT :x\r\n",
+        )
+        .await
+        .unwrap();
+        let lines = read_until(&mut r, |l| l.iter().any(|x| x.contains("400"))).await;
+        assert!(
+            lines.iter().any(|l| l.contains("400") && l.contains("Invalid")),
+            "AROUND * → 400: {lines:?}"
+        );
+    })
+    .await;
+
+    let shared = shared_plain();
+    with_client(shared, 86, |mut w, mut r| async move {
+        w.write_all(b"NICK n\r\nUSER u 0 * :U\r\nAWAY :brb\r\nUSERHOST n\r\nQUIT :x\r\n")
+            .await
+            .unwrap();
+        let lines = read_until(&mut r, |l| l.iter().any(|x| x.contains("302"))).await;
+        assert!(
+            lines.iter().any(|l| l.contains("302") && l.contains("n=-u@")),
+            "away USERHOST → =-: {lines:?}"
         );
     })
     .await;

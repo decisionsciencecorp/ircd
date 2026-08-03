@@ -120,7 +120,8 @@ where
     let mut sasl_state = SaslState::Idle;
     let mut pass_ok = cfg.server.password.is_empty();
     let has_accounts = !cfg.accounts.is_empty();
-    let has_history = cfg.history.enabled;
+    // Ads follow a live store, not cfg.history.enabled alone (open-fail → no ads).
+    let has_history = shared.lock().await.history_store().is_some();
     let cap_list = advertised_caps(has_accounts, has_history);
 
     // Event-driven select! between member outbox and buffered reads (H-07/H-08 / C9).
@@ -988,6 +989,8 @@ where
                                 (g.history_store(), g.config().history.auto_replay_on_join)
                             };
                             if let (Some(store), lim) = (hist, limit) {
+                                // Cap replay budget (audit L4); latest() also clamps 1..=200.
+                                let lim = crate::config::clamp_auto_replay_on_join(lim);
                                 if lim > 0 && !has_cap(&enabled_caps, "draft/chathistory") {
                                     if let Ok(rows) =
                                         store.latest_async(chan.to_string(), lim).await
@@ -1096,6 +1099,20 @@ where
                                 .await?;
                             continue;
                         };
+                        if field_has_control(text) {
+                            writer
+                                .write_all(
+                                    numeric(
+                                        server_name,
+                                        461,
+                                        nick_s,
+                                        &["PRIVMSG", "Invalid message"],
+                                    )
+                                    .as_bytes(),
+                                )
+                                .await?;
+                            continue;
+                        }
                         if target.starts_with('#') {
                             let (allowed, hist) = {
                                 let g = shared.lock().await;
@@ -1912,6 +1929,10 @@ where
                         else {
                             continue; // NOTICE: no error replies
                         };
+                        // Drop control-bearing text silently (NOTICE has no errors).
+                        if field_has_control(text) {
+                            continue;
+                        }
                         if target.starts_with('#') {
                             let allowed = {
                                 let g = shared.lock().await;
@@ -2394,11 +2415,17 @@ where
                         let parts = {
                             let g = shared.lock().await;
                             let mut parts = Vec::new();
-                            for n in nicks.iter().take(10) {
+                            // RFC 2342: at most five nicknames per query.
+                            for n in nicks.iter().take(5) {
                                 if let Some(id) = g.nick_id(&ascii_casefold(n)) {
                                     let u = g.username(id).unwrap_or("user");
                                     let disp = g.display_nick(id).unwrap_or(n.as_str());
-                                    parts.push(format!("{disp}=+{u}@dsc.local"));
+                                    let flag = if g.away_message(id).is_some() {
+                                        '-'
+                                    } else {
+                                        '+'
+                                    };
+                                    parts.push(format!("{disp}={flag}{u}@dsc.local"));
                                 }
                             }
                             parts

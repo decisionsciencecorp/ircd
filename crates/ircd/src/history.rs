@@ -351,7 +351,8 @@ impl HistoryStore {
                 }
                 Ok(out)
             }
-            _ => self.latest(channel, limit as usize),
+            // Mixed / unbound selectors are invalid for BETWEEN (MSGREFTYPES honesty).
+            _ => Ok(Vec::new()),
         }
     }
 
@@ -365,14 +366,42 @@ impl HistoryStore {
         Ok(rows.next().transpose()?)
     }
 
+    /// Nearest row by timestamp using two bounded `(channel, ts_ms)` index seeks
+    /// (floor ≤ ts and ceil ≥ ts) — not `ORDER BY ABS(...)` full-channel scan.
     fn nearest_ts(&self, channel: &str, ts: i64) -> Result<Option<HistMsg>> {
         let g = self.inner.lock().unwrap();
-        let mut stmt = g.db.prepare_cached(
+        let mut floor_stmt = g.db.prepare_cached(
             "SELECT id, channel, ts_ms, prefix, text FROM channel_history
-             WHERE channel = ?1 ORDER BY ABS(ts_ms - ?2) ASC, id ASC LIMIT 1",
+             WHERE channel = ?1 AND ts_ms <= ?2
+             ORDER BY ts_ms DESC, id DESC LIMIT 1",
         )?;
-        let mut rows = stmt.query_map(params![channel, ts], row_hist)?;
-        Ok(rows.next().transpose()?)
+        let floor = floor_stmt
+            .query_map(params![channel, ts], row_hist)?
+            .next()
+            .transpose()?;
+        let mut ceil_stmt = g.db.prepare_cached(
+            "SELECT id, channel, ts_ms, prefix, text FROM channel_history
+             WHERE channel = ?1 AND ts_ms >= ?2
+             ORDER BY ts_ms ASC, id ASC LIMIT 1",
+        )?;
+        let ceil = ceil_stmt
+            .query_map(params![channel, ts], row_hist)?
+            .next()
+            .transpose()?;
+        Ok(match (floor, ceil) {
+            (Some(a), Some(b)) => {
+                let da = (a.ts_ms - ts).abs();
+                let db = (b.ts_ms - ts).abs();
+                if da < db || (da == db && a.id <= b.id) {
+                    Some(a)
+                } else {
+                    Some(b)
+                }
+            }
+            (Some(a), None) => Some(a),
+            (None, Some(b)) => Some(b),
+            (None, None) => None,
+        })
     }
 
     /// Channels that have at least one history row (for TARGETS).
@@ -674,9 +703,14 @@ mod tests {
         let mixed = store
             .between("#c", HistBound::MsgId(1), HistBound::TsMs(ts3), 3)
             .unwrap();
-        assert_eq!(mixed.len(), 3);
+        assert!(mixed.is_empty(), "mixed BETWEEN refs → empty");
         let after_none = store.after("#c", HistBound::None, 2).unwrap();
         assert_eq!(after_none.len(), 2);
+        // nearest_ts via AROUND timestamp (index seeks, not ABS scan).
+        let around_mid = store
+            .around("#c", HistBound::TsMs((ts0 + ts3) / 2), 4)
+            .unwrap();
+        assert!(!around_mid.is_empty());
     }
 
     #[test]

@@ -6,7 +6,7 @@ use anyhow::Result;
 use ircd_core::tags::{adapt_bus_line, prepend_tag, unix_ms_to_rfc3339};
 use tokio::io::AsyncWriteExt;
 
-use crate::history::{HistMsg, HistQuery, HistoryStore};
+use crate::history::{HistBound, HistMsg, HistQuery, HistoryStore};
 use super::cap::has_cap;
 
 pub(super) fn is_targets(params: &[String]) -> bool {
@@ -38,6 +38,14 @@ pub(super) fn parse_sub(params: &[String]) -> Option<(HistQuery, String, usize)>
             .and_then(|s| s.parse().ok())
             .unwrap_or(50)
             .clamp(1, 200);
+        // Same ref family only (msgid↔msgid or timestamp↔timestamp).
+        let ok = matches!(
+            (a, b),
+            (HistBound::MsgId(_), HistBound::MsgId(_)) | (HistBound::TsMs(_), HistBound::TsMs(_))
+        );
+        if !ok {
+            return None;
+        }
         return Some((HistQuery::Between(a, b), channel, limit));
     }
     let sel = HistoryStore::parse_selector(params.get(2).map(String::as_str).unwrap_or("*"));
@@ -53,6 +61,10 @@ pub(super) fn parse_sub(params: &[String]) -> Option<(HistQuery, String, usize)>
     } else if sub.eq_ignore_ascii_case("AFTER") {
         HistQuery::After(sel)
     } else if sub.eq_ignore_ascii_case("AROUND") {
+        // AROUND requires a real pivot (* / None is not a coherent window).
+        if matches!(sel, HistBound::None) {
+            return None;
+        }
         HistQuery::Around(sel)
     } else {
         return None;
@@ -155,9 +167,13 @@ mod tests {
         ));
         assert_eq!(ch, "#c");
         assert_eq!(lim, 8);
+        assert!(
+            parse_sub(&["AROUND".into(), "#c".into(), "*".into(), "3".into()]).is_none(),
+            "AROUND * rejected"
+        );
         let (q, _, _) =
-            parse_sub(&["AROUND".into(), "#c".into(), "*".into(), "3".into()]).unwrap();
-        assert!(matches!(q, HistQuery::Around(HistBound::None)));
+            parse_sub(&["AROUND".into(), "#c".into(), "msgid=dsc2".into(), "3".into()]).unwrap();
+        assert!(matches!(q, HistQuery::Around(HistBound::MsgId(2))));
         let (q, _, _) =
             parse_sub(&["AFTER".into(), "#c".into(), "dsc2".into(), "5".into()]).unwrap();
         assert!(matches!(q, HistQuery::After(HistBound::MsgId(2))));
@@ -167,6 +183,17 @@ mod tests {
             parse_sub(&["LATEST".into(), "#c".into(), "*".into(), "1".into()]).unwrap();
         assert!(matches!(q, HistQuery::Latest));
         assert!(parse_sub(&["NOPE".into(), "#c".into()]).is_none());
+        assert!(
+            parse_sub(&[
+                "BETWEEN".into(),
+                "#c".into(),
+                "msgid=dsc1".into(),
+                "*".into(),
+                "5".into()
+            ])
+            .is_none(),
+            "BETWEEN mixed/unbound rejected"
+        );
     }
 
     #[tokio::test]

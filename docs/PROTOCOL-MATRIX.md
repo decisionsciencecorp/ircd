@@ -83,7 +83,7 @@
 | `account-tag` | always | PASS | On authed PRIVMSG/NOTICE/TAGMSG fanout; WHOIS 330 | F2b |
 | `batch` | always | PASS | CHATHISTORY framing + `@batch=` with CRLF-correct BATCH ± | F2b / F3 |
 | `sasl=PLAIN` | when accounts | PASS | Chunked AUTHENTICATE; 905/906/907; TLS-only when required | F2c |
-| `draft/chathistory` | when history | PASS | LATEST/BEFORE/AFTER/AROUND/BETWEEN/TARGETS; MSGREFTYPES; JOIN auto-replay suppressed when negotiated | F3 |
+| `draft/chathistory` | when history store live | PASS | CAP suppresses JOIN auto-replay when negotiated; verb itself is gated by live store + ISUPPORT `CHATHISTORY=` (see §D) | F3 |
 | `away-notify` | always | PASS | Shared-channel notify on set/clear/join; not to self | — |
 
 Do **not** advertise a new cap in the same commit that leaves behavior incomplete.

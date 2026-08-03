@@ -255,6 +255,11 @@ fn default_hist_replay() -> usize {
     50
 }
 
+/// JOIN auto-replay is clamped to CHATHISTORY's per-query max (200).
+pub fn clamp_auto_replay_on_join(n: usize) -> usize {
+    n.min(200)
+}
+
 impl Default for HistorySection {
     fn default() -> Self {
         Self {
