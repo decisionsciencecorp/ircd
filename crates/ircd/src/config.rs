@@ -197,6 +197,9 @@ pub struct ServerSection {
     pub max_nick_length: usize,
     #[serde(default = "default_chan_len")]
     pub max_channel_length: usize,
+    /// Optional connection password (`PASS`). Empty = not required.
+    #[serde(default)]
+    pub password: String,
 }
 
 fn default_server_name() -> String {
@@ -286,6 +289,7 @@ impl Default for Config {
                 admin_email: String::new(),
                 max_nick_length: default_nick_len(),
                 max_channel_length: default_chan_len(),
+                password: String::new(),
             },
             listen: vec![ListenSection {
                 bind: "127.0.0.1:6667".into(),

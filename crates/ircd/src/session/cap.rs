@@ -95,11 +95,15 @@ pub(crate) fn has_cap(enabled: &HashSet<String>, name: &str) -> bool {
         .any(|c| c.split('=').next().unwrap_or(c).eq_ignore_ascii_case(name))
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum SaslState {
     Idle,
-    AwaitPlain,
+    /// Accumulating AUTHENTICATE base64 chunks (IRCv3 ≤400 octets per line).
+    AwaitPlain { buf: String },
 }
+
+const SASL_CHUNK_MAX: usize = 400;
+const SASL_TOTAL_MAX: usize = 1024;
 
 pub(crate) async fn handle_cap<W>(
     writer: &mut W,
@@ -150,7 +154,6 @@ where
                 )
                 .await?;
         }
-        // Mirror away-notify into Shared for peer fanout (F1a).
         let has_away = has_cap(enabled_caps, "away-notify");
         shared.lock().await.set_away_notify(conn_id, has_away);
         return Ok(());
@@ -175,6 +178,8 @@ pub(crate) async fn handle_authenticate<W>(
     enabled_caps: &HashSet<String>,
     sasl_state: &mut SaslState,
     account: &mut Option<String>,
+    shared: &Arc<Mutex<Shared>>,
+    conn_id: ClientId,
 ) -> Result<()>
 where
     W: AsyncWriteExt + Unpin,
@@ -191,13 +196,26 @@ where
         return Ok(());
     }
     let param = msg.params.first().map(String::as_str).unwrap_or("");
-    match *sasl_state {
+    match sasl_state.clone() {
         SaslState::Idle => {
+            if account.is_some() {
+                writer
+                    .write_all(
+                        numeric(
+                            server_name,
+                            907,
+                            nick_s,
+                            &["You have already authenticated using SASL"],
+                        )
+                        .as_bytes(),
+                    )
+                    .await?;
+                return Ok(());
+            }
             if param.eq_ignore_ascii_case("PLAIN") {
-                *sasl_state = SaslState::AwaitPlain;
+                *sasl_state = SaslState::AwaitPlain { buf: String::new() };
                 writer.write_all(b"AUTHENTICATE +\r\n").await?;
             } else if param == "*" {
-                *sasl_state = SaslState::Idle;
                 writer
                     .write_all(
                         numeric(server_name, 906, nick_s, &["SASL authentication aborted"])
@@ -218,9 +236,9 @@ where
                     .await?;
             }
         }
-        SaslState::AwaitPlain => {
-            *sasl_state = SaslState::Idle;
+        SaslState::AwaitPlain { mut buf } => {
             if param == "*" {
+                *sasl_state = SaslState::Idle;
                 writer
                     .write_all(
                         numeric(server_name, 906, nick_s, &["SASL authentication aborted"])
@@ -229,7 +247,48 @@ where
                     .await?;
                 return Ok(());
             }
-            let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(param) else {
+            if param == "+" {
+                // Empty final chunk — finalize with what we have.
+            } else {
+                if param.len() > SASL_CHUNK_MAX {
+                    *sasl_state = SaslState::Idle;
+                    writer
+                        .write_all(
+                            numeric(
+                                server_name,
+                                905,
+                                nick_s,
+                                &["SASL message too long"],
+                            )
+                            .as_bytes(),
+                        )
+                        .await?;
+                    return Ok(());
+                }
+                buf.push_str(param);
+                if buf.len() > SASL_TOTAL_MAX {
+                    *sasl_state = SaslState::Idle;
+                    writer
+                        .write_all(
+                            numeric(
+                                server_name,
+                                905,
+                                nick_s,
+                                &["SASL message too long"],
+                            )
+                            .as_bytes(),
+                        )
+                        .await?;
+                    return Ok(());
+                }
+                // Exact 400 ⇒ more chunks expected.
+                if param.len() == SASL_CHUNK_MAX {
+                    *sasl_state = SaslState::AwaitPlain { buf };
+                    return Ok(());
+                }
+            }
+            *sasl_state = SaslState::Idle;
+            let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(buf.as_bytes()) else {
                 writer
                     .write_all(
                         numeric(server_name, 904, nick_s, &["SASL authentication failed"])
@@ -264,6 +323,10 @@ where
                 return Ok(());
             };
             *account = Some(acc.name.clone());
+            shared
+                .lock()
+                .await
+                .set_account(conn_id, acc.name.clone());
             let user_s = user.unwrap_or("user");
             let host = "dsc.local";
             let full = format!("{nick_s}!{user_s}@{host}");

@@ -96,7 +96,8 @@ impl HistoryStore {
                 prefix TEXT NOT NULL,
                 text TEXT NOT NULL
              );
-             CREATE INDEX IF NOT EXISTS idx_hist_chan_id ON channel_history(channel, id);",
+             CREATE INDEX IF NOT EXISTS idx_hist_chan_id ON channel_history(channel, id);
+             CREATE INDEX IF NOT EXISTS idx_hist_chan_ts ON channel_history(channel, ts_ms);",
         )?;
         Ok(Self {
             inner: Mutex::new(HistInner {
@@ -190,6 +191,208 @@ impl HistoryStore {
         Ok(out)
     }
 
+    /// Parse `dsc<id>` msgid → row id.
+    pub fn parse_msgid(s: &str) -> Option<i64> {
+        s.strip_prefix("dsc")?.parse().ok()
+    }
+
+    /// Parse IRCv3 timestamp=… or msgid=… selector; `*` → None bound.
+    pub fn parse_selector(sel: &str) -> HistBound {
+        if sel == "*" {
+            return HistBound::None;
+        }
+        if let Some(rest) = sel.strip_prefix("msgid=") {
+            return HistBound::MsgId(Self::parse_msgid(rest).unwrap_or(-1));
+        }
+        if let Some(rest) = sel
+            .strip_prefix("timestamp=")
+            .or_else(|| sel.strip_prefix("time="))
+        {
+            return HistBound::TsMs(rfc3339_to_unix_ms(rest).unwrap_or(-1));
+        }
+        // Bare msgid without prefix (lenient).
+        if let Some(id) = Self::parse_msgid(sel) {
+            return HistBound::MsgId(id);
+        }
+        HistBound::None
+    }
+
+    pub fn before(&self, channel: &str, bound: HistBound, limit: usize) -> Result<Vec<HistMsg>> {
+        let limit = limit.clamp(1, 200) as i64;
+        let g = self.inner.lock().unwrap();
+        let mut out = Vec::new();
+        match bound {
+            HistBound::None => {
+                let mut stmt = g.db.prepare_cached(
+                    "SELECT id, channel, ts_ms, prefix, text FROM channel_history
+                     WHERE channel = ?1 ORDER BY id DESC LIMIT ?2",
+                )?;
+                for r in stmt.query_map(params![channel, limit], row_hist)? {
+                    out.push(r?);
+                }
+            }
+            HistBound::MsgId(id) => {
+                let mut stmt = g.db.prepare_cached(
+                    "SELECT id, channel, ts_ms, prefix, text FROM channel_history
+                     WHERE channel = ?1 AND id < ?2 ORDER BY id DESC LIMIT ?3",
+                )?;
+                for r in stmt.query_map(params![channel, id, limit], row_hist)? {
+                    out.push(r?);
+                }
+            }
+            HistBound::TsMs(ts) => {
+                let mut stmt = g.db.prepare_cached(
+                    "SELECT id, channel, ts_ms, prefix, text FROM channel_history
+                     WHERE channel = ?1 AND ts_ms < ?2 ORDER BY id DESC LIMIT ?3",
+                )?;
+                for r in stmt.query_map(params![channel, ts, limit], row_hist)? {
+                    out.push(r?);
+                }
+            }
+        }
+        out.reverse();
+        Ok(out)
+    }
+
+    pub fn after(&self, channel: &str, bound: HistBound, limit: usize) -> Result<Vec<HistMsg>> {
+        let limit = limit.clamp(1, 200) as i64;
+        let g = self.inner.lock().unwrap();
+        let mut out = Vec::new();
+        match bound {
+            HistBound::None => {
+                let mut stmt = g.db.prepare_cached(
+                    "SELECT id, channel, ts_ms, prefix, text FROM channel_history
+                     WHERE channel = ?1 ORDER BY id ASC LIMIT ?2",
+                )?;
+                for r in stmt.query_map(params![channel, limit], row_hist)? {
+                    out.push(r?);
+                }
+            }
+            HistBound::MsgId(id) => {
+                let mut stmt = g.db.prepare_cached(
+                    "SELECT id, channel, ts_ms, prefix, text FROM channel_history
+                     WHERE channel = ?1 AND id > ?2 ORDER BY id ASC LIMIT ?3",
+                )?;
+                for r in stmt.query_map(params![channel, id, limit], row_hist)? {
+                    out.push(r?);
+                }
+            }
+            HistBound::TsMs(ts) => {
+                let mut stmt = g.db.prepare_cached(
+                    "SELECT id, channel, ts_ms, prefix, text FROM channel_history
+                     WHERE channel = ?1 AND ts_ms > ?2 ORDER BY id ASC LIMIT ?3",
+                )?;
+                for r in stmt.query_map(params![channel, ts, limit], row_hist)? {
+                    out.push(r?);
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    pub fn around(&self, channel: &str, bound: HistBound, limit: usize) -> Result<Vec<HistMsg>> {
+        let limit = limit.clamp(1, 200);
+        let before_n = limit / 2;
+        let after_n = limit.saturating_sub(before_n);
+        let before = self.before(channel, bound, before_n.max(1))?;
+        let mut after = self.after(channel, bound, after_n.max(1))?;
+        let pivot = match bound {
+            HistBound::MsgId(id) if id > 0 => self.by_id(channel, id)?,
+            HistBound::TsMs(ts) if ts >= 0 => self.nearest_ts(channel, ts)?,
+            _ => None,
+        };
+        let mut out = before;
+        if let Some(p) = pivot {
+            if out.last().map(|h| h.id) != Some(p.id) && after.first().map(|h| h.id) != Some(p.id) {
+                out.push(p);
+            }
+        }
+        out.append(&mut after);
+        out.truncate(limit);
+        Ok(out)
+    }
+
+    pub fn between(
+        &self,
+        channel: &str,
+        a: HistBound,
+        b: HistBound,
+        limit: usize,
+    ) -> Result<Vec<HistMsg>> {
+        let limit = limit.clamp(1, 200) as i64;
+        match (a, b) {
+            (HistBound::MsgId(x), HistBound::MsgId(y)) => {
+                let lo = x.min(y);
+                let hi = x.max(y);
+                let g = self.inner.lock().unwrap();
+                let mut stmt = g.db.prepare_cached(
+                    "SELECT id, channel, ts_ms, prefix, text FROM channel_history
+                     WHERE channel = ?1 AND id >= ?2 AND id <= ?3
+                     ORDER BY id ASC LIMIT ?4",
+                )?;
+                let mut out = Vec::new();
+                for r in stmt.query_map(params![channel, lo, hi, limit], row_hist)? {
+                    out.push(r?);
+                }
+                Ok(out)
+            }
+            (HistBound::TsMs(x), HistBound::TsMs(y)) => {
+                let lo_ts = x.min(y);
+                let hi_ts = x.max(y);
+                let g = self.inner.lock().unwrap();
+                let mut stmt = g.db.prepare_cached(
+                    "SELECT id, channel, ts_ms, prefix, text FROM channel_history
+                     WHERE channel = ?1 AND ts_ms >= ?2 AND ts_ms <= ?3
+                     ORDER BY id ASC LIMIT ?4",
+                )?;
+                let mut out = Vec::new();
+                for r in stmt.query_map(params![channel, lo_ts, hi_ts, limit], row_hist)? {
+                    out.push(r?);
+                }
+                Ok(out)
+            }
+            _ => self.latest(channel, limit as usize),
+        }
+    }
+
+    fn by_id(&self, channel: &str, id: i64) -> Result<Option<HistMsg>> {
+        let g = self.inner.lock().unwrap();
+        let mut stmt = g.db.prepare_cached(
+            "SELECT id, channel, ts_ms, prefix, text FROM channel_history
+             WHERE channel = ?1 AND id = ?2 LIMIT 1",
+        )?;
+        let mut rows = stmt.query_map(params![channel, id], row_hist)?;
+        Ok(rows.next().transpose()?)
+    }
+
+    fn nearest_ts(&self, channel: &str, ts: i64) -> Result<Option<HistMsg>> {
+        let g = self.inner.lock().unwrap();
+        let mut stmt = g.db.prepare_cached(
+            "SELECT id, channel, ts_ms, prefix, text FROM channel_history
+             WHERE channel = ?1 ORDER BY ABS(ts_ms - ?2) ASC, id ASC LIMIT 1",
+        )?;
+        let mut rows = stmt.query_map(params![channel, ts], row_hist)?;
+        Ok(rows.next().transpose()?)
+    }
+
+    /// Channels that have at least one history row (for TARGETS).
+    pub fn channels_with_history(&self, limit: usize) -> Result<Vec<(String, i64, i64)>> {
+        let limit = limit.clamp(1, 200) as i64;
+        let g = self.inner.lock().unwrap();
+        let mut stmt = g.db.prepare_cached(
+            "SELECT channel, MAX(id), MAX(ts_ms) FROM channel_history
+             GROUP BY channel ORDER BY MAX(id) DESC LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(params![limit], |row| {
+            Ok((row.get::<_, String>(0)?, row.get(1)?, row.get(2)?))
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
     /// Append on a blocking pool thread (safe from async contexts).
     pub async fn append_async(
         self: &Arc<Self>,
@@ -214,6 +417,100 @@ impl HistoryStore {
             .await
             .context("history latest join")?
     }
+
+    pub async fn query_async(
+        self: &Arc<Self>,
+        kind: HistQuery,
+        channel: String,
+        limit: usize,
+    ) -> Result<Vec<HistMsg>> {
+        let store = Arc::clone(self);
+        tokio::task::spawn_blocking(move || match kind {
+            HistQuery::Latest => store.latest(&channel, limit),
+            HistQuery::Before(b) => store.before(&channel, b, limit),
+            HistQuery::After(b) => store.after(&channel, b, limit),
+            HistQuery::Around(b) => store.around(&channel, b, limit),
+            HistQuery::Between(a, b) => store.between(&channel, a, b, limit),
+        })
+        .await
+        .context("history query join")?
+    }
+
+    pub async fn targets_async(
+        self: &Arc<Self>,
+        limit: usize,
+    ) -> Result<Vec<(String, i64, i64)>> {
+        let store = Arc::clone(self);
+        tokio::task::spawn_blocking(move || store.channels_with_history(limit))
+            .await
+            .context("history targets join")?
+    }
+}
+
+fn row_hist(row: &rusqlite::Row<'_>) -> rusqlite::Result<HistMsg> {
+    Ok(HistMsg {
+        id: row.get(0)?,
+        channel: row.get(1)?,
+        ts_ms: row.get(2)?,
+        prefix: row.get(3)?,
+        text: row.get(4)?,
+    })
+}
+
+/// CHATHISTORY selector bound.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HistBound {
+    None,
+    MsgId(i64),
+    TsMs(i64),
+}
+
+/// CHATHISTORY query kind (channel-scoped).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HistQuery {
+    Latest,
+    Before(HistBound),
+    After(HistBound),
+    Around(HistBound),
+    Between(HistBound, HistBound),
+}
+
+/// Best-effort RFC3339 → unix ms (accepts `…Z` with optional fractional seconds).
+pub fn rfc3339_to_unix_ms(s: &str) -> Option<i64> {
+    let s = s.trim();
+    // YYYY-MM-DDTHH:MM:SS(.mmm)Z
+    if s.len() < 20 || !s.ends_with('Z') {
+        return None;
+    }
+    let body = &s[..s.len() - 1];
+    let (date, time) = body.split_once('T')?;
+    let mut d = date.split('-');
+    let y: i64 = d.next()?.parse().ok()?;
+    let mo: u32 = d.next()?.parse().ok()?;
+    let day: u32 = d.next()?.parse().ok()?;
+    let (hms, frac) = match time.split_once('.') {
+        Some((h, f)) => (h, f),
+        None => (time, "0"),
+    };
+    let mut t = hms.split(':');
+    let hour: u64 = t.next()?.parse().ok()?;
+    let min: u64 = t.next()?.parse().ok()?;
+    let sec: u64 = t.next()?.parse().ok()?;
+    let mut millis: u32 = 0;
+    if !frac.is_empty() {
+        let padded = format!("{frac:0<3}");
+        millis = padded[..3].parse().ok()?;
+    }
+    // Days from civil date (Howard Hinnant).
+    let y = if mo <= 2 { y - 1 } else { y };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = (y - era * 400) as u64;
+    let mp = if mo > 2 { mo - 3 } else { mo + 9 };
+    let doy = (153 * mp as u64 + 2) / 5 + day as u64 - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = (era * 146097 + doe as i64) - 719468;
+    let secs = days * 86400 + (hour * 3600 + min * 60 + sec) as i64;
+    Some(secs * 1000 + millis as i64)
 }
 
 #[cfg(test)]
@@ -233,6 +530,35 @@ mod tests {
         assert_eq!(rows.len(), 5);
         assert_eq!(rows[0].text, "msg15");
         assert_eq!(rows[4].text, "msg19");
+    }
+
+    #[test]
+    fn before_after_between() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("q.db");
+        let store = HistoryStore::open(&path, 100).unwrap();
+        let mut ids = Vec::new();
+        for i in 0..10 {
+            ids.push(store.append("#c", "p", &format!("{i}")).unwrap().id);
+        }
+        let mid = ids[4];
+        let before = store.before("#c", HistBound::MsgId(mid), 3).unwrap();
+        assert_eq!(before.len(), 3);
+        assert_eq!(before[2].id, ids[3]);
+        let after = store.after("#c", HistBound::MsgId(mid), 2).unwrap();
+        assert_eq!(after.len(), 2);
+        assert_eq!(after[0].id, ids[5]);
+        let between = store
+            .between("#c", HistBound::MsgId(ids[2]), HistBound::MsgId(ids[5]), 10)
+            .unwrap();
+        assert_eq!(between.len(), 4);
+        assert_eq!(HistoryStore::parse_selector("msgid=dsc7"), HistBound::MsgId(7));
+        assert_eq!(HistoryStore::parse_selector("*"), HistBound::None);
+        let ts = unix_ms_to_rfc3339(store.latest("#c", 1).unwrap()[0].ts_ms);
+        assert!(matches!(
+            HistoryStore::parse_selector(&format!("timestamp={ts}")),
+            HistBound::TsMs(_)
+        ));
     }
 
     #[test]
@@ -287,5 +613,11 @@ mod tests {
         }
         let store = HistoryStore::open_with_retention(&path, 10, 50).unwrap();
         assert_eq!(store.latest("#c", 10).unwrap().len(), 1);
+        assert_eq!(store.channels_with_history(10).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn rfc3339_epoch() {
+        assert_eq!(rfc3339_to_unix_ms("1970-01-01T00:00:00.000Z"), Some(0));
     }
 }

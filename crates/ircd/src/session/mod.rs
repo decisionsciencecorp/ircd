@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use ircd_core::tags::{adapt_bus_line, prepend_tag};
+use ircd_core::tags::{adapt_bus_line, prepend_tag, validate_tag_block};
 use ircd_core::{
     ascii_casefold, field_has_control, numeric, server_notice, valid_channel_name, Command, Nick,
     RawLine,
@@ -20,6 +20,7 @@ use crate::state::Shared;
 use crate::VERSION;
 
 mod cap;
+mod chathistory;
 mod io;
 mod message;
 mod register;
@@ -117,6 +118,7 @@ where
     let mut quit_announced = false;
     let mut account: Option<String> = None;
     let mut sasl_state = SaslState::Idle;
+    let mut pass_ok = cfg.server.password.is_empty();
     let has_accounts = !cfg.accounts.is_empty();
     let has_history = cfg.history.enabled;
     let cap_list = advertised_caps(has_accounts, has_history);
@@ -148,10 +150,18 @@ where
                 IoEvent::Outbox(Some(raw_line)) => {
                     let line = adapt_bus_line(raw_line.as_ref(), &enabled_caps);
                     writer.write_all(line.as_bytes()).await?;
+                    if line.starts_with("ERROR ") {
+                        break 'session;
+                    }
                     if let Some(n) = nick.as_deref() {
                         if let Some(raw) =
                             ircd_core::RawLine::parse(line.trim_end_matches(['\r', '\n']))
                         {
+                            if raw.command_eq("KILL")
+                                && raw.params.first().map(|t| t.as_str()) == Some(n)
+                            {
+                                break 'session;
+                            }
                             if raw.command_eq("KICK")
                                 && raw.params.get(1).map(|t| t.as_str()) == Some(n)
                             {
@@ -220,6 +230,20 @@ where
         let Some(msg) = RawLine::parse(&raw) else {
             continue;
         };
+        if validate_tag_block(msg.tags.as_deref()).is_some() {
+            writer
+                .write_all(
+                    numeric(
+                        server_name,
+                        417,
+                        nick.as_deref().unwrap_or("*"),
+                        &["Input line too long"],
+                    )
+                    .as_bytes(),
+                )
+                .await?;
+            continue;
+        }
         let cmd = Command::from_raw(&msg);
         let _lane = cmd.lane();
 
@@ -243,24 +267,26 @@ where
                     .map(|s| s.eq_ignore_ascii_case("END"))
                     .unwrap_or(false)
                 {
-                    try_register(
-                        &mut writer,
-                        server_name,
-                        &cfg.server.motd,
-                        &mut registered,
-                        nick.as_deref(),
-                        user.as_deref(),
-                        realname.as_deref(),
-                        cap_negotiating,
-                        cfg.server.max_nick_length,
-                        cfg.server.max_channel_length,
-                        if has_history {
-                            Some(register::CHATHISTORY_ISUPPORT_MAX)
-                        } else {
-                            None
-                        },
-                    )
-                    .await?;
+                    if pass_ok {
+                        try_register(
+                            &mut writer,
+                            server_name,
+                            &cfg.server.motd,
+                            &mut registered,
+                            nick.as_deref(),
+                            user.as_deref(),
+                            realname.as_deref(),
+                            cap_negotiating,
+                            cfg.server.max_nick_length,
+                            cfg.server.max_channel_length,
+                            if has_history {
+                                Some(register::CHATHISTORY_ISUPPORT_MAX)
+                            } else {
+                                None
+                            },
+                        )
+                        .await?;
+                    }
                 }
                 continue;
             }
@@ -290,8 +316,62 @@ where
                     &enabled_caps,
                     &mut sasl_state,
                     &mut account,
+                    &shared,
+                    conn_id,
                 )
                 .await?;
+                continue;
+            }
+
+            Command::Pass { password } => {
+                if registered {
+                    writer
+                        .write_all(
+                            numeric(
+                                server_name,
+                                462,
+                                nick.as_deref().unwrap_or("*"),
+                                &["You may not reregister"],
+                            )
+                            .as_bytes(),
+                        )
+                        .await?;
+                    continue;
+                }
+                if cfg.server.password.is_empty() {
+                    pass_ok = true;
+                    continue;
+                }
+                let Some(p) = password else {
+                    writer
+                        .write_all(
+                            numeric(
+                                server_name,
+                                461,
+                                nick.as_deref().unwrap_or("*"),
+                                &["PASS", "Not enough parameters"],
+                            )
+                            .as_bytes(),
+                        )
+                        .await?;
+                    continue;
+                };
+                if *p == cfg.server.password {
+                    pass_ok = true;
+                } else {
+                    pass_ok = false;
+                    writer
+                        .write_all(
+                            numeric(
+                                server_name,
+                                464,
+                                nick.as_deref().unwrap_or("*"),
+                                &["Password incorrect"],
+                            )
+                            .as_bytes(),
+                        )
+                        .await?;
+                }
                 continue;
             }
 
@@ -372,24 +452,26 @@ where
                         }
                     }
                 }
-                try_register(
-                    &mut writer,
-                    server_name,
-                    &cfg.server.motd,
-                    &mut registered,
-                    nick.as_deref(),
-                    user.as_deref(),
-                    realname.as_deref(),
-                    cap_negotiating,
-                    cfg.server.max_nick_length,
-                    cfg.server.max_channel_length,
-                    if has_history {
-                        Some(register::CHATHISTORY_ISUPPORT_MAX)
-                    } else {
-                        None
-                    },
-                )
-                .await?;
+                if pass_ok {
+                    try_register(
+                        &mut writer,
+                        server_name,
+                        &cfg.server.motd,
+                        &mut registered,
+                        nick.as_deref(),
+                        user.as_deref(),
+                        realname.as_deref(),
+                        cap_negotiating,
+                        cfg.server.max_nick_length,
+                        cfg.server.max_channel_length,
+                        if has_history {
+                            Some(register::CHATHISTORY_ISUPPORT_MAX)
+                        } else {
+                            None
+                        },
+                    )
+                    .await?;
+                }
                 continue;
             }
 
@@ -432,8 +514,26 @@ where
                         continue;
                     }
                 }
-                user = Some(u);
+                user = Some(u.clone());
                 realname = rn;
+                {
+                    let mut g = shared.lock().await;
+                    g.set_username(conn_id, u);
+                }
+                if !pass_ok {
+                    writer
+                        .write_all(
+                            numeric(
+                                server_name,
+                                464,
+                                nick.as_deref().unwrap_or("*"),
+                                &["Password incorrect"],
+                            )
+                            .as_bytes(),
+                        )
+                        .await?;
+                    continue;
+                }
                 try_register(
                     &mut writer,
                     server_name,
@@ -623,6 +723,7 @@ where
                         }
                         if name == &oper.name && pass == &oper.password {
                             is_oper = true;
+                            shared.lock().await.set_oper(conn_id, true);
                             writer
                                 .write_all(
                                     numeric(
@@ -881,13 +982,13 @@ where
                                     .as_bytes(),
                                 )
                                 .await?;
-                            // Auto-replay recent channel history (Ergo-style convenience).
+                            // Auto-replay when draft/chathistory is NOT negotiated (F3).
                             let (hist, limit) = {
                                 let g = shared.lock().await;
                                 (g.history_store(), g.config().history.auto_replay_on_join)
                             };
                             if let (Some(store), lim) = (hist, limit) {
-                                if lim > 0 {
+                                if lim > 0 && !has_cap(&enabled_caps, "draft/chathistory") {
                                     if let Ok(rows) =
                                         store.latest_async(chan.to_string(), lim).await
                                     {
@@ -904,42 +1005,34 @@ where
                     }
 
                     Command::Chathistory { .. } => {
-                        let sub = msg.params.first().map(String::as_str).unwrap_or("");
-                        if !sub.eq_ignore_ascii_case("LATEST") {
+                        if !has_cap(&enabled_caps, "draft/chathistory") {
+                            writer
+                                .write_all(
+                                    numeric(
+                                        server_name,
+                                        421,
+                                        nick_s,
+                                        &["CHATHISTORY", "Unknown command"],
+                                    )
+                                    .as_bytes(),
+                                )
+                                .await?;
+                            continue;
+                        }
+                        let Some((kind, target, limit)) = chathistory::parse_sub(&msg.params) else {
                             writer
                                 .write_all(
                                     numeric(
                                         server_name,
                                         400,
                                         nick_s,
-                                        &["CHATHISTORY", "Only LATEST is implemented"],
+                                        &["CHATHISTORY", "Invalid parameters"],
                                     )
                                     .as_bytes(),
                                 )
                                 .await?;
                             continue;
-                        }
-                        let target = msg.params.get(1).map(String::as_str).unwrap_or("");
-                        let limit = msg
-                            .params
-                            .get(3)
-                            .and_then(|s| s.parse::<usize>().ok())
-                            .unwrap_or(50)
-                            .clamp(1, 200);
-                        if !target.starts_with('#') || !channels.contains(target) {
-                            writer
-                                .write_all(
-                                    numeric(
-                                        server_name,
-                                        442,
-                                        nick_s,
-                                        &[target, "You're not on that channel"],
-                                    )
-                                    .as_bytes(),
-                                )
-                                .await?;
-                            continue;
-                        }
+                        };
                         let store = { shared.lock().await.history_store() };
                         let Some(store) = store else {
                             writer
@@ -955,43 +1048,47 @@ where
                                 .await?;
                             continue;
                         };
+                        if chathistory::is_targets(&msg.params) {
+                            let rows = store.targets_async(limit).await.unwrap_or_default();
+                            // Only channels this client is on.
+                            let mine: Vec<_> = rows
+                                .into_iter()
+                                .filter(|(c, _, _)| channels.contains(c))
+                                .collect();
+                            chathistory::emit_targets_batch(
+                                &mut writer,
+                                server_name,
+                                &mine,
+                                &enabled_caps,
+                            )
+                            .await?;
+                            continue;
+                        }
+                        if !target.starts_with('#') || !channels.contains(&target) {
+                            writer
+                                .write_all(
+                                    numeric(
+                                        server_name,
+                                        442,
+                                        nick_s,
+                                        &[target.as_str(), "You're not on that channel"],
+                                    )
+                                    .as_bytes(),
+                                )
+                                .await?;
+                            continue;
+                        }
                         let rows = store
-                            .latest_async(target.to_string(), limit)
+                            .query_async(kind, target, limit)
                             .await
                             .unwrap_or_default();
-                        // BATCH / chathistory CAP not advertised until Protocol P2 (#2227).
-                        let use_batch = has_cap(&enabled_caps, "batch");
-                        if use_batch {
-                            writer
-                                .write_all(
-                                    format!(
-                                        ":{} BATCH +chathist draft/chathistory
-",
-                                        server_name
-                                    )
-                                    .as_bytes(),
-                                )
-                                .await?;
-                        }
-                        for h in rows {
-                            let mut line = adapt_bus_line(&h.tagged_privmsg(), &enabled_caps);
-                            if use_batch {
-                                line = prepend_tag(&line, "batch", "chathist");
-                            }
-                            writer.write_all(line.as_bytes()).await?;
-                        }
-                        if use_batch {
-                            writer
-                                .write_all(
-                                    format!(
-                                        ":{} BATCH -chathist
-",
-                                        server_name
-                                    )
-                                    .as_bytes(),
-                                )
-                                .await?;
-                        }
+                        chathistory::emit_history_batch(
+                            &mut writer,
+                            server_name,
+                            &rows,
+                            &enabled_caps,
+                        )
+                        .await?;
                         continue;
                     }
 
@@ -1964,8 +2061,10 @@ where
                                                 (false, true) => "H@",
                                                 (false, false) => "H",
                                             };
+                                            let u = g.username(id).unwrap_or("user").to_string();
                                             out.push((
                                                 mask.to_string(),
+                                                u,
                                                 n.to_string(),
                                                 flags.to_string(),
                                             ));
@@ -1982,13 +2081,14 @@ where
                                         } else {
                                             "H"
                                         };
-                                        out.push(("*".into(), display, flags.into()));
+                                        let u = g.username(id).unwrap_or("user").to_string();
+                                        out.push(("*".into(), u, display, flags.into()));
                                     }
                                 }
                             }
                             out
                         };
-                        for (chan, n, flags) in rows {
+                        for (chan, u, n, flags) in rows {
                             // 352: <channel> <user> <host> <server> <nick> <H|G>[*][@|+] :<hopcount> <real>
                             writer
                                 .write_all(
@@ -1998,7 +2098,7 @@ where
                                         nick_s,
                                         &[
                                             chan.as_str(),
-                                            "user",
+                                            u.as_str(),
                                             "dsc.local",
                                             server_name,
                                             n.as_str(),
@@ -2040,12 +2140,15 @@ where
                             tid.map(|id| {
                                 let nick =
                                     g.display_nick(id).unwrap_or(target.as_str()).to_string();
+                                let user = g.username(id).unwrap_or("user").to_string();
                                 let chans = g.whois_channels(id);
                                 let away = g.away_message(id).map(str::to_string);
-                                (nick, chans, away)
+                                let account = g.account_name(id).map(str::to_string);
+                                let is_op = g.is_oper_id(id);
+                                (nick, user, chans, away, account, is_op)
                             })
                         };
-                        let Some((who_nick, chans, away)) = info else {
+                        let Some((who_nick, who_user, chans, away, who_acct, who_oper)) = info else {
                             writer
                                 .write_all(
                                     numeric(
@@ -2065,7 +2168,7 @@ where
                                     server_name,
                                     311,
                                     nick_s,
-                                    &[who_nick.as_str(), "user", "dsc.local", "*", "realname"],
+                                    &[who_nick.as_str(), who_user.as_str(), "dsc.local", "*", "realname"],
                                 )
                                 .as_bytes(),
                             )
@@ -2094,6 +2197,32 @@ where
                                 .as_bytes(),
                             )
                             .await?;
+                        if who_oper {
+                            writer
+                                .write_all(
+                                    numeric(
+                                        server_name,
+                                        313,
+                                        nick_s,
+                                        &[who_nick.as_str(), "is an IRC operator"],
+                                    )
+                                    .as_bytes(),
+                                )
+                                .await?;
+                        }
+                        if let Some(acct) = who_acct.as_deref() {
+                            writer
+                                .write_all(
+                                    numeric(
+                                        server_name,
+                                        330,
+                                        nick_s,
+                                        &[who_nick.as_str(), acct, "is logged in as"],
+                                    )
+                                    .as_bytes(),
+                                )
+                                .await?;
+                        }
                         if !chans.is_empty() {
                             let list = chans.join(" ");
                             writer
@@ -2186,10 +2315,19 @@ where
                                 .as_bytes(),
                             )
                             .await?;
+                        let opers = {
+                            let g = shared.lock().await;
+                            g.oper_count().to_string()
+                        };
                         writer
                             .write_all(
-                                numeric(server_name, 252, nick_s, &["0", "operator(s) online"])
-                                    .as_bytes(),
+                                numeric(
+                                    server_name,
+                                    252,
+                                    nick_s,
+                                    &[opers.as_str(), "operator(s) online"],
+                                )
+                                .as_bytes(),
                             )
                             .await?;
                         writer
@@ -2260,6 +2398,195 @@ where
                                     .await?;
                             }
                         }
+                        continue;
+                    }
+
+
+                    Command::Userhost { nicks } => {
+                        let parts = {
+                            let g = shared.lock().await;
+                            let mut parts = Vec::new();
+                            for n in nicks.iter().take(10) {
+                                if let Some(id) = g.nick_id(&ascii_casefold(n)) {
+                                    let u = g.username(id).unwrap_or("user");
+                                    let disp = g.display_nick(id).unwrap_or(n.as_str());
+                                    parts.push(format!("{disp}=+{u}@dsc.local"));
+                                }
+                            }
+                            parts
+                        };
+                        let body = parts.join(" ");
+                        writer
+                            .write_all(numeric(server_name, 302, nick_s, &[body.as_str()]).as_bytes())
+                            .await?;
+                        continue;
+                    }
+
+                    Command::Ison { nicks } => {
+                        let online = {
+                            let g = shared.lock().await;
+                            nicks
+                                .iter()
+                                .filter(|n| g.nick_id(&ascii_casefold(n)).is_some())
+                                .cloned()
+                                .collect::<Vec<_>>()
+                                .join(" ")
+                        };
+                        writer
+                            .write_all(numeric(server_name, 303, nick_s, &[online.as_str()]).as_bytes())
+                            .await?;
+                        continue;
+                    }
+
+                    Command::Time => {
+                        let now = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_secs())
+                            .unwrap_or(0);
+                        let stamp = format!("{now}");
+                        writer
+                            .write_all(
+                                numeric(
+                                    server_name,
+                                    391,
+                                    nick_s,
+                                    &[server_name, stamp.as_str()],
+                                )
+                                .as_bytes(),
+                            )
+                            .await?;
+                        continue;
+                    }
+
+                    Command::Info => {
+                        writer
+                            .write_all(
+                                numeric(
+                                    server_name,
+                                    371,
+                                    nick_s,
+                                    &[&format!("dsc-ircd-{VERSION} — Decision Science Corp")],
+                                )
+                                .as_bytes(),
+                            )
+                            .await?;
+                        writer
+                            .write_all(
+                                numeric(server_name, 374, nick_s, &["End of /INFO list"]).as_bytes(),
+                            )
+                            .await?;
+                        continue;
+                    }
+
+                    Command::Kill { nick: kill_nick, reason } => {
+                        if !is_oper {
+                            writer
+                                .write_all(
+                                    numeric(
+                                        server_name,
+                                        481,
+                                        nick_s,
+                                        &["Permission Denied- You're not an IRC operator"],
+                                    )
+                                    .as_bytes(),
+                                )
+                                .await?;
+                            continue;
+                        }
+                        let Some(target_nick) = kill_nick else {
+                            writer
+                                .write_all(
+                                    numeric(
+                                        server_name,
+                                        461,
+                                        nick_s,
+                                        &["KILL", "Not enough parameters"],
+                                    )
+                                    .as_bytes(),
+                                )
+                                .await?;
+                            continue;
+                        };
+                        let reason_s = reason.as_deref().unwrap_or("Killed");
+                        let victim = {
+                            let g = shared.lock().await;
+                            g.nick_id(&ascii_casefold(target_nick))
+                        };
+                        let Some(vid) = victim else {
+                            writer
+                                .write_all(
+                                    numeric(
+                                        server_name,
+                                        401,
+                                        nick_s,
+                                        &[target_nick.as_str(), "No such nick/channel"],
+                                    )
+                                    .as_bytes(),
+                                )
+                                .await?;
+                            continue;
+                        };
+                        let kill_line = format!(":{prefix} KILL {target_nick} :{reason_s}\r\n");
+                        let err = format!(
+                            "ERROR :Closing Link: {target_nick} (Killed ({nick_s} ({reason_s})))\r\n"
+                        );
+                        {
+                            let mut g = shared.lock().await;
+                            let chans = g.channels_containing(vid);
+                            let mut peers = std::collections::HashSet::new();
+                            for c in &chans {
+                                for id in g.channel_member_ids(c, vid) {
+                                    peers.insert(id);
+                                }
+                            }
+                            let peers: Vec<_> = peers.into_iter().collect();
+                            let _ = g.fanout_ids(&peers, &kill_line);
+                            let _ = g.fanout_ids(&[vid], &kill_line);
+                            let _ = g.fanout_ids(&[vid], &err);
+                            for chan in &chans {
+                                if let Some(ch) = g.channel_mut(chan) {
+                                    ch.remove_member(vid);
+                                }
+                            }
+                            let _ = g.clear_nick(vid);
+                            g.clear_session_meta(vid);
+                            g.unregister_outbox(vid);
+                        }
+                        continue;
+                    }
+
+                    Command::Wallops { text } => {
+                        if !is_oper {
+                            writer
+                                .write_all(
+                                    numeric(
+                                        server_name,
+                                        481,
+                                        nick_s,
+                                        &["Permission Denied- You're not an IRC operator"],
+                                    )
+                                    .as_bytes(),
+                                )
+                                .await?;
+                            continue;
+                        }
+                        let Some(body) = text else {
+                            writer
+                                .write_all(
+                                    numeric(
+                                        server_name,
+                                        461,
+                                        nick_s,
+                                        &["WALLOPS", "Not enough parameters"],
+                                    )
+                                    .as_bytes(),
+                                )
+                                .await?;
+                            continue;
+                        };
+                        let line = format!(":{prefix} WALLOPS :{body}\r\n");
+                        let opers = { shared.lock().await.oper_ids() };
+                        let _ = shared.lock().await.fanout_ids(&opers, &line);
                         continue;
                     }
 

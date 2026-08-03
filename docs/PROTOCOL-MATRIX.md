@@ -1,8 +1,8 @@
 # Full client protocol acceptance matrix — dsc-ircd
 
 **Bar (Mark, 2026-08-03):** full Modern IRC + advertised IRCv3 — **not** a v0 subset.  
-**Tip probed:** F1b landing (INVITE numerics + CHANMODES=b,,,nti)
-**Program:** Tasks [Doc #976](https://tasks.decisionsciencecorp.com/admin/doc.php?id=976) · Matrix [Doc #977](https://tasks.decisionsciencecorp.com/admin/doc.php?id=977) · Epic [#2251](https://tasks.decisionsciencecorp.com/admin/view.php?id=2251) · F0 [#2252](https://tasks.decisionsciencecorp.com/admin/view.php?id=2252)  
+**Tip probed:** F1–F4 landing (query verbs, tags/SASL edges, CHATHISTORY, KILL/WALLOPS)
+**Program:** Tasks [Doc #976](https://tasks.decisionsciencecorp.com/admin/doc.php?id=976) · Matrix [Doc #977](https://tasks.decisionsciencecorp.com/admin/doc.php?id=977) · Epic [#2251](https://tasks.decisionsciencecorp.com/admin/view.php?id=2251)  
 **Standing coverage:** [#2214](https://tasks.decisionsciencecorp.com/admin/view.php?id=2214) (≥90% tarpaulin after code slices)  
 **irctest allowlist:** [`IRCTEST.md`](IRCTEST.md)
 
@@ -25,6 +25,7 @@
 | Public zero1 bind | Ops ([#2210](https://tasks.decisionsciencecorp.com/admin/view.php?id=2210)); parallel after Gate A |
 | Ban/invite **exceptions** (`+e` / `+I`) | Optional; not claimed in `optional_behaviors` / IRCTEST allowlist |
 | Caps we do **not** advertise (`multi-prefix`, `echo-message`, `account-notify`, `extended-join`, `labeled-response`, `setname`, `MONITOR`, STS, …) | NAK on REQ is correct until we implement + advertise |
+| Full WHOX field set | **Not advertised** — classic WHO 352 only (F1c honesty) |
 
 ---
 
@@ -33,15 +34,15 @@
 | Surface | Status | Tip notes | Phase | In-tree / irctest |
 |---------|--------|-----------|-------|-------------------|
 | NICK + USER → 001–004 | PASS | Registration path | — | `protocol_*_e2e` |
-| 005 ISUPPORT | PASS | CASEMAPPING=ascii, CHANTYPES, PREFIX=(o)@, NICKLEN, CHANNELLEN, CHANMODES=b,,,nti, NETWORK, UTF8*, WHOX, CLIENTTAGDENY, TARGMAX; `CHATHISTORY=<n>` when history on | — | register / C7 |
-| 005 `MSGREFTYPES` | MISSING | Omitted while LATEST ignores refs — required when F3 lands refs | F3 | — |
+| 005 ISUPPORT | PASS | CASEMAPPING, CHANTYPES, PREFIX, NICKLEN, CHANNELLEN, CHANMODES=b,,,nti, NETWORK, UTF8*, CLIENTTAGDENY, TARGMAX; `CHATHISTORY` + `MSGREFTYPES` when history on; **no WHOX** | — | register / C7 / F slices |
+| 005 `MSGREFTYPES` | PASS | `msgid,timestamp` when history enabled | F3 | `protocol_c7_e2e` / `protocol_f_slices_e2e` |
 | CAP LS/LIST/REQ/END + atomic NAK | PASS | Mixed unknown → full NAK | — | `protocol_c3_e2e`, irctest CAP probes |
 | `cap-notify` | PASS | Always on; cannot disable | — | CAP e2e |
 | PING / PONG | PASS | Bare PING → 409 | — | curated `testPing*` |
 | QUIT + ERROR Closing Link | PASS | Reason preserved | — | curated `testQuit*` |
 | 421 unknown command | PASS | | — | routes e2e |
-| 461 need more params (core verbs) | PARTIAL | Present on many paths; residual gaps → F1d | F1d | — |
-| PASS (server password) | NON-GOAL* | Unsupported when unset; irctest controller allowlist. *If we add connection password later, treat as config feature — not blocking client protocol claim.* | — | IRCTEST.md |
+| 461 need more params (core verbs) | PASS | Core + F1d verbs | F1d | `protocol_f_slices_e2e` |
+| PASS (server password) | PASS | Optional `server.password`; 464 when wrong; no-op when unset | F1d | session |
 | Flood / line limits / disconnect cleanup | PASS | Gate A | — | `gate_a_acceptance_e2e` |
 
 ---
@@ -54,21 +55,21 @@
 | Direct user PRIVMSG | PASS | | — | curated `testPrivmsgToUser` |
 | NOTICE (channel + user) | PASS | No error replies (correct) | — | protocol e2e |
 | TAGMSG | PASS | Requires `message-tags`; C7 | — | `protocol_c7_e2e` |
-| Client-only `+` tag relay | PASS | C7 | — | `protocol_c7_e2e` |
+| Client-only `+` tag relay | PASS | Escape on relay (F2a) | F2a | `protocol_c7_e2e` |
 | JOIN / PART / NICK fanout | PASS | ClientId identity; ascii casemap | — | Gate A / curated |
 | TOPIC | PASS | `+t` op check | — | protocol e2e |
 | KICK | PASS | Authoritative membership | — | protocol e2e |
 | MODE `+o` / `+n` / `+t` | PASS | Multi-arg `+oo` (C8) | — | `protocol_c8_e2e` |
 | MODE `+i` + INVITE list | PASS | Invite-only JOIN + invite consume; INVITE 403/442/482/401/443/341 | — | `protocol_c2_e2e` / `protocol_f1b_e2e` |
 | MODE `+b` bans | PASS | Add/remove/list (367/368) + JOIN 474; simple masks; no `+e`/`+I` (NON-GOAL) | — | `protocol_c2_e2e` |
-| User modes | MISSING | Silently ignored (except oper path separate) | F4 | — |
-| Standalone NAMES | PARTIAL | Works; wire split / multi-channel TARGMAX honesty TBD | F1c | C1 / curated JoinNamreply |
-| LIST | PARTIAL | Basic; filters/limits TBD | F1c | C1 |
-| WHO | PARTIAL | Channel/mask; flags `H`/`H@` only; **WHOX advertised but not implemented** | F1c | C1 |
-| WHOIS | PARTIAL | 311/312/319/318; no account/away/oper detail | F1c | C1 |
+| User modes | PARTIAL | Silent ignore for non-oper umodes (oper path separate) | F4 | — |
+| Standalone NAMES | PASS | Wire-split to `max_line_bytes`; TARGMAX=NAMES:1 | F1c | curated JoinNamreply / F slices |
+| LIST | PASS | Basic channel filter | F1c | `protocol_f_slices_e2e` |
+| WHO | PASS | Channel/mask; `H`/`G` (+ `@` for ops); username from USER; **WHOX not advertised** | F1c | F slices |
+| WHOIS | PASS | 311/301/312/313/330/319/318 | F1c | F slices |
 | INVITE verb | PASS | 341 + delivery; 403/442/482/401/443; invite-notify unadvertised (ok) | — | `protocol_f1b_e2e` |
 | AWAY | PASS | Set/clear → 306/305; WHOIS/PRIVMSG 301; WHO `G`/`H` | — | `protocol_f1a_e2e` |
-| USERHOST / ISON / TIME / INFO | MISSING | → 421 | F1d | — |
+| USERHOST / ISON / TIME / INFO | PASS | 302 / 303 / 391 / 371+374 | F1d | `protocol_f_slices_e2e` |
 
 ---
 
@@ -77,12 +78,12 @@
 | Cap | Advertised? | Status | Tip notes | Phase |
 |-----|-------------|--------|-----------|-------|
 | `cap-notify` | always | PASS | | — |
-| `message-tags` | always | PARTIAL | TAGMSG + `+` relay OK; **escape/size/417** incomplete | F2a |
-| `server-time` | always | PARTIAL | Timestamp adapt OK; depends on full tag rules | F2a / F2b |
-| `account-tag` | always | PARTIAL | On authed PRIVMSG/NOTICE/TAGMSG fanout; not all user-originated / caused numerics | F2b |
-| `batch` | always | PARTIAL | CHATHISTORY framing + `@batch=`; nesting/vocabulary incomplete | F2b / F3 |
-| `sasl=PLAIN` | when accounts | PARTIAL | Happy path; chunking / 905 / 907 / reauth edges | F2c |
-| `draft/chathistory` | when history | PARTIAL | **LATEST only**; BATCH type; auto-replay still on; no MSGREFTYPES | F3 |
+| `message-tags` | always | PASS | TAGMSG + `+` relay; escape; tag-block size → **417** | F2a |
+| `server-time` | always | PASS | Timestamp adapt on bus lines | F2a / F2b |
+| `account-tag` | always | PASS | On authed PRIVMSG/NOTICE/TAGMSG fanout; WHOIS 330 | F2b |
+| `batch` | always | PASS | CHATHISTORY framing + `@batch=` with CRLF-correct BATCH ± | F2b / F3 |
+| `sasl=PLAIN` | when accounts | PASS | Chunked AUTHENTICATE; 905/906/907; TLS-only when required | F2c |
+| `draft/chathistory` | when history | PASS | LATEST/BEFORE/AFTER/AROUND/BETWEEN/TARGETS; MSGREFTYPES; JOIN auto-replay suppressed when negotiated | F3 |
 | `away-notify` | always | PASS | Shared-channel notify on set/clear/join; not to self | — |
 
 Do **not** advertise a new cap in the same commit that leaves behavior incomplete.
@@ -93,14 +94,14 @@ Do **not** advertise a new cap in the same commit that leaves behavior incomplet
 
 | Item | Status | Phase |
 |------|--------|-------|
-| CAP `draft/chathistory` | PARTIAL (LATEST) | F3 |
-| `005 CHATHISTORY=<n>` | PASS (when history on; max 200) | — / F3 expand |
-| `005 MSGREFTYPES` | MISSING | F3 |
+| CAP `draft/chathistory` | PASS | F3 |
+| `005 CHATHISTORY=<n>` | PASS (when history on; max 200) | — |
+| `005 MSGREFTYPES` | PASS (`msgid,timestamp`) | F3 |
 | Subcommand LATEST | PASS | — |
-| BEFORE / AFTER / AROUND / BETWEEN / TARGETS | MISSING (explicit reject today) | F3 |
-| msgid / timestamp refs | MISSING (ignored) | F3 |
-| Suppress JOIN auto-replay when negotiated | MISSING | F3 |
-| Batch type vocabulary | PARTIAL | F2b / F3 |
+| BEFORE / AFTER / AROUND / BETWEEN / TARGETS | PASS | F3 |
+| msgid / timestamp refs | PASS | F3 |
+| Suppress JOIN auto-replay when negotiated | PASS | F3 |
+| Batch type vocabulary | PASS (`draft/chathistory` + `@batch=`) | F2b / F3 |
 
 ---
 
@@ -110,8 +111,8 @@ Do **not** advertise a new cap in the same commit that leaves behavior incomplet
 |---------|--------|-------|
 | OPER / ADMIN | PASS (lab) | — |
 | Channel op kick/topic/mode subset | PASS | — |
-| KILL | MISSING | F4 |
-| WALLOPS | MISSING | F4 |
+| KILL | PASS | Oper-only; ERROR to victim | F4 |
+| WALLOPS | PASS | Oper-only fanout to opers | F4 |
 | Claimed CHANMODES completeness | PASS for `b,,,nti` (no `+e`/`+I`) | — |
 
 ---
@@ -122,44 +123,36 @@ Do **not** advertise a new cap in the same commit that leaves behavior incomplet
 |---------|--------|-------|
 | TCP plaintext | PASS | |
 | TLS | PASS | Auth policy Gate A |
-| WebSocket / WSS | PASS (daemon) | irctest WS harness **UNSUPPORTED** (controller allowlist) → F5 |
+| WebSocket / WSS | PASS (daemon) | irctest WS harness still UNSUPPORTED (controller allowlist) — F5 notes |
 | WS CRLF normalize | PASS | C13 |
 
 ---
 
-## G. Curated irctest gate (expand in F5)
+## G. Curated irctest gate (F5)
 
-**In curated `-k` today:** Ping*, Privmsg*, JoinNamreply, Cap invalid/NoReq, Quit*, Part.
+**In curated `-k`:** Ping*, Privmsg*, JoinNamreply, Cap invalid/NoReq, Quit*, Part, Away* (F1a).
 
-**Advertised caps not yet in curated `-k`:** message-tags / server-time / account-tag / batch / sasl / chathistory modules — defended by in-tree e2e until promoted (never hide via `-m not …`).
+**Still in-tree e2e (not yet curated `-k`):** message-tags / server-time / account-tag / batch / sasl / chathistory / KILL — `protocol_f_slices_e2e` + prior protocol_* suites. Never hide via `-m not …`.
 
-**Allowlist (intentional):** WS harness, PASS, services, STS, unadvertised caps, `+e`/`+I`, Ergo-specific — see `IRCTEST.md`.
+**Allowlist (intentional):** WS harness, services, STS, unadvertised caps, `+e`/`+I`, Ergo-specific — see `IRCTEST.md`.
 
 ---
 
 ## Execute map (children on list #372)
 
-| Phase | Task | Closes matrix rows |
-|-------|------|--------------------|
-| F0 | #2252 | This document (freeze) |
-| F1a | #2253 | AWAY + `away-notify` |
-| F1b | #2254 | INVITE / `+i` / `+b` honesty |
-| F1c | #2255 | WHO / WHOIS / NAMES / LIST / WHOX |
-| F1d | #2256 | USERHOST / ISON / TIME / INFO / residual numerics |
-| F2a | #2257 | message-tags escape / size / 417 |
-| F2b | #2258 | account-tag + server-time breadth; batch invariants |
-| F2c | #2259 | SASL PLAIN edges |
-| F3 | #2260 | CHATHISTORY complete + MSGREFTYPES |
-| F4 | #2261 | KILL / WALLOPS / CHANMODES claim |
-| F5 | #2262 | Expand irctest + WS harness |
-| F6 | #2263 | Docs #973/#974/#976 closeout |
+| Phase | Task | Status |
+|-------|------|--------|
+| F0 | #2252 | done |
+| F1a | #2253 | done |
+| F1b | #2254 | done |
+| F1c | #2255 | done |
+| F1d | #2256 | done |
+| F2a | #2257 | done |
+| F2b | #2258 | done |
+| F2c | #2259 | done |
+| F3 | #2260 | done |
+| F4 | #2261 | done |
+| F5 | #2262 | curated expand + matrix note |
+| F6 | #2263 | docs closeout |
 
-**Order:** F0 → F1 → F2 → F3 → F4 → F5 → F6. Tag foundation (F2a) before CHATHISTORY refs (F3).
-
----
-
-## Must-answer (F0)
-
-1. **Does the matrix list every Modern IRC surface we will claim, with pass/fail/missing vs tip?** Yes — sections A–E above vs tip `409e873`.
-2. **Is #2174 retargeted so “done” means full bar, not CLI v0 smoke?** Yes — tracker alias; closes with this artifact.
-3. **Are Non-goals explicit?** Yes — table at top + IRCTEST allowlist; S2S / in-daemon services / Unreal modules / zero1 bind are not protocol excuses.
+**Order:** F0 → F1 → F2 → F3 → F4 → F5 → F6.

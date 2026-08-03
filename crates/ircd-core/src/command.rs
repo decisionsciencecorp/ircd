@@ -86,6 +86,25 @@ pub enum Command {
         /// `None` = clear away; `Some` = set (message may be empty).
         message: Option<String>,
     },
+    /// Connection password (pre-register when `server.password` is set).
+    Pass {
+        password: Option<String>,
+    },
+    Userhost {
+        nicks: Vec<String>,
+    },
+    Ison {
+        nicks: Vec<String>,
+    },
+    Time,
+    Info,
+    Kill {
+        nick: Option<String>,
+        reason: Option<String>,
+    },
+    Wallops {
+        text: Option<String>,
+    },
     Chathistory {
         params: Vec<String>,
     },
@@ -163,6 +182,16 @@ impl Command {
             "VERSION" => Self::Version,
             "LUSERS" => Self::Lusers,
             "AWAY" => Self::Away { message: at(0) },
+            "PASS" => Self::Pass { password: at(0) },
+            "USERHOST" => Self::Userhost { nicks: p.clone() },
+            "ISON" => Self::Ison { nicks: p.clone() },
+            "TIME" => Self::Time,
+            "INFO" => Self::Info,
+            "KILL" => Self::Kill {
+                nick: at(0),
+                reason: at(1),
+            },
+            "WALLOPS" => Self::Wallops { text: at(0) },
             "CHATHISTORY" => Self::Chathistory { params: p.clone() },
             _ => Self::Unknown {
                 verb: line.command.clone(),
@@ -198,6 +227,13 @@ impl Command {
             Self::Version => "VERSION",
             Self::Lusers => "LUSERS",
             Self::Away { .. } => "AWAY",
+            Self::Pass { .. } => "PASS",
+            Self::Userhost { .. } => "USERHOST",
+            Self::Ison { .. } => "ISON",
+            Self::Time => "TIME",
+            Self::Info => "INFO",
+            Self::Kill { .. } => "KILL",
+            Self::Wallops { .. } => "WALLOPS",
             Self::Chathistory { .. } => "CHATHISTORY",
             Self::Unknown { verb } => verb.as_str(),
         }
@@ -211,6 +247,7 @@ impl Command {
                 | Self::Authenticate { .. }
                 | Self::Nick { .. }
                 | Self::User { .. }
+                | Self::Pass { .. }
                 | Self::Ping { .. }
                 | Self::Quit { .. }
         )
@@ -220,15 +257,17 @@ impl Command {
     pub fn lane(&self) -> &'static str {
         match self {
             Self::Cap { .. } | Self::Authenticate { .. } => "cap",
-            Self::Nick { .. } | Self::User { .. } => "registration",
+            Self::Nick { .. } | Self::User { .. } | Self::Pass { .. } => "registration",
             Self::Ping { .. }
             | Self::Quit { .. }
             | Self::Admin
             | Self::Motd
             | Self::Version
             | Self::Lusers
-            | Self::Away { .. } => "session",
-            Self::Oper { .. } => "oper",
+            | Self::Away { .. }
+            | Self::Time
+            | Self::Info => "session",
+            Self::Oper { .. } | Self::Kill { .. } | Self::Wallops { .. } => "oper",
             Self::Join { .. }
             | Self::Part { .. }
             | Self::Topic { .. }
@@ -238,7 +277,10 @@ impl Command {
             | Self::Names { .. }
             | Self::List { .. } => "channel",
             Self::Privmsg { .. } | Self::Notice { .. } | Self::Tagmsg { .. } => "message",
-            Self::Who { .. } | Self::Whois { .. } => "query",
+            Self::Who { .. }
+            | Self::Whois { .. }
+            | Self::Userhost { .. }
+            | Self::Ison { .. } => "query",
             Self::Chathistory { .. } => "history",
             Self::Unknown { .. } => "unknown",
         }
@@ -329,6 +371,13 @@ mod tests {
             ("LUSERS", "LUSERS"),
             ("AWAY :gone", "AWAY"),
             ("AWAY", "AWAY"),
+            ("PASS secret", "PASS"),
+            ("USERHOST a b", "USERHOST"),
+            ("ISON a b", "ISON"),
+            ("TIME", "TIME"),
+            ("INFO", "INFO"),
+            ("KILL n :r", "KILL"),
+            ("WALLOPS :hi", "WALLOPS"),
             ("CHATHISTORY LATEST #x * 5", "CHATHISTORY"),
             ("ZZZ", "ZZZ"),
         ];

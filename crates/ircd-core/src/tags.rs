@@ -80,6 +80,93 @@ pub fn prepend_tag_block(line: &str, tag_block: &str) -> String {
     }
 }
 
+/// IRCv3 message-tag value escape (F2a).
+///
+/// Escapes `;`, SPACE, `\\`, CR, LF, and leading `:` in values.
+pub fn escape_tag_value(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for c in value.chars() {
+        match c {
+            ';' => out.push_str("\\:"),
+            ' ' => out.push_str("\\s"),
+            '\\' => out.push_str("\\\\"),
+            '\r' => out.push_str("\\r"),
+            '\n' => out.push_str("\\n"),
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+/// Inverse of [`escape_tag_value`]. Returns `None` on truncated/invalid escapes.
+pub fn unescape_tag_value(value: &str) -> Option<String> {
+    let mut out = String::with_capacity(value.len());
+    let mut chars = value.chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            match chars.next()? {
+                ':' => out.push(';'),
+                's' => out.push(' '),
+                '\\' => out.push('\\'),
+                'r' => out.push('\r'),
+                'n' => out.push('\n'),
+                // Unknown escape: keep the escaped char (spec: drop backslash).
+                other => out.push(other),
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    Some(out)
+}
+
+/// Max octets for the tag block (without leading `@`), per IRCv3 message-tags.
+pub const MAX_TAG_BLOCK_BYTES: usize = 4096;
+
+/// Validate an inbound tag block. `None` = ok; `Some(417)` = too large / bad.
+pub fn validate_tag_block(tags: Option<&str>) -> Option<u16> {
+    let Some(tags) = tags else {
+        return None;
+    };
+    if tags.len() > MAX_TAG_BLOCK_BYTES {
+        return Some(417);
+    }
+    for part in tags.split(';') {
+        if part.is_empty() {
+            continue;
+        }
+        let (key, value) = match part.split_once('=') {
+            Some((k, v)) => (k, Some(v)),
+            None => (part, None),
+        };
+        if key.is_empty() || key.contains([' ', '\r', '\n', '\0']) {
+            return Some(417);
+        }
+        if let Some(v) = value {
+            if unescape_tag_value(v).is_none() {
+                return Some(417);
+            }
+        }
+    }
+    None
+}
+
+/// Escape client-only tag values in a tag block before relay.
+pub fn escape_client_tag_block(block: &str) -> String {
+    let mut parts = Vec::new();
+    for part in block.split(';') {
+        if part.is_empty() {
+            continue;
+        }
+        if let Some((key, value)) = part.split_once('=') {
+            parts.push(format!("{key}={}", escape_tag_value(value)));
+        } else {
+            parts.push(part.to_string());
+        }
+    }
+    parts.join(";")
+}
+
 /// Adapt a (possibly tagged) bus line to the client's negotiated caps.
 ///
 /// Untagged lines with no `server-time` cap return immediately (C14 cheap path).
@@ -334,6 +421,29 @@ mod tests {
     #[test]
     fn prepend_tag_block_empty_is_ensure_crlf() {
         assert_eq!(prepend_tag_block("PING :x", ""), "PING :x\r\n");
+    }
+
+    #[test]
+    fn tag_escape_roundtrip() {
+        let raw = "a;b c\\d\r\ne";
+        let esc = escape_tag_value(raw);
+        assert_eq!(esc, "a\\:b\\sc\\\\d\\r\\ne");
+        assert_eq!(unescape_tag_value(&esc).unwrap(), raw);
+        assert!(unescape_tag_value("trailing\\").is_none());
+    }
+
+    #[test]
+    fn validate_tag_block_size_and_keys() {
+        assert_eq!(validate_tag_block(None), None);
+        assert_eq!(validate_tag_block(Some("+foo=bar")), None);
+        assert_eq!(validate_tag_block(Some(&"x".repeat(MAX_TAG_BLOCK_BYTES + 1))), Some(417));
+        assert_eq!(validate_tag_block(Some("=novalue")), Some(417));
+    }
+
+    #[test]
+    fn escape_client_tag_block_spaces() {
+        let out = escape_client_tag_block("+draft/reply=a b");
+        assert_eq!(out, "+draft/reply=a\\sb");
     }
 
     #[test]

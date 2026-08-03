@@ -2,7 +2,7 @@
 
 use std::collections::HashSet;
 
-use ircd_core::tags::{client_only_tag_payload, prepend_tag_block};
+use ircd_core::tags::{client_only_tag_payload, escape_client_tag_block, prepend_tag_block};
 use ircd_core::RawLine;
 
 use super::cap::has_cap;
@@ -12,7 +12,7 @@ pub(super) fn relay_client_tags(line: String, msg: &RawLine, enabled_caps: &Hash
         return line;
     }
     match client_only_tag_payload(msg.tags.as_deref()) {
-        Some(block) => prepend_tag_block(&line, &block),
+        Some(block) => prepend_tag_block(&line, &escape_client_tag_block(&block)),
         None => line,
     }
 }

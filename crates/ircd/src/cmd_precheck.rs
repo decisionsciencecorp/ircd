@@ -407,11 +407,17 @@ pub fn isupport_tokens(nick_len: u32, chan_len: u32) -> Vec<String> {
         "NETWORK=DSC".into(),
         "UTF8MAPPING=rfc8265".into(),
         "UTF8ONLY".into(),
-        "WHOX".into(),
         "CLIENTTAGDENY=".into(),
         "TARGMAX=NAMES:1,LIST:1,KICK:1,WHOIS:1,PRIVMSG:4,NOTICE:4,INVITE:0".into(),
-        // CHATHISTORY=<n> is emitted from registration when history is enabled (C7);
-        // MSGREFTYPES is intentionally omitted (LATEST ignores msgid/timestamp refs).
+        // CHATHISTORY / MSGREFTYPES appended when history is enabled (register / F3).
+    ]
+}
+
+/// Extra ISUPPORT tokens when channel history is on.
+pub fn isupport_history_tokens(max: usize) -> Vec<String> {
+    vec![
+        format!("CHATHISTORY={max}"),
+        "MSGREFTYPES=msgid,timestamp".into(),
     ]
 }
 

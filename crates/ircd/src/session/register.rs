@@ -21,8 +21,7 @@ pub(crate) async fn try_register<W>(
     cap_negotiating: bool,
     nick_len: usize,
     chan_len: usize,
-    // When Some(max), advertise CHATHISTORY=<max>. None = history off (C7).
-    // MSGREFTYPES intentionally omitted — LATEST ignores msgid/timestamp refs.
+    // When Some(max), advertise CHATHISTORY=<max> + MSGREFTYPES (F3).
     chathistory_max: Option<usize>,
 ) -> Result<()>
 where
@@ -84,13 +83,11 @@ where
             .as_bytes(),
         )
         .await?;
-    let mut isupport = format!(
-        "CASEMAPPING=ascii CHANTYPES=# PREFIX=(o)@ NICKLEN={nick_len} CHANNELLEN={chan_len} CHANMODES=b,,,nti NETWORK=DSC"
-    );
+    let mut tokens = crate::cmd_precheck::isupport_tokens(nick_len as u32, chan_len as u32);
     if let Some(max) = chathistory_max {
-        isupport.push_str(&format!(" CHATHISTORY={max}"));
+        tokens.extend(crate::cmd_precheck::isupport_history_tokens(max));
     }
-    isupport.push_str(" :are supported by this server");
+    let isupport = format!("{} :are supported by this server", tokens.join(" "));
     writer
         .write_all(numeric(server_name, 5, nick, &[isupport.as_str()]).as_bytes())
         .await?;

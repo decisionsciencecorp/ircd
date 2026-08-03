@@ -239,6 +239,12 @@ pub struct Shared {
     away: HashMap<ClientId, String>,
     /// Clients that negotiated `away-notify` (F1a).
     away_notify: HashSet<ClientId>,
+    /// SASL account name when authenticated (F1c / F2b).
+    accounts: HashMap<ClientId, String>,
+    /// Clients that successfully OPER'd (F4).
+    opers: HashSet<ClientId>,
+    /// USER username for WHO / USERHOST (F1c / F1d).
+    usernames: HashMap<ClientId, String>,
     config: Arc<Config>,
     history: Option<Arc<HistoryStore>>,
     ip_counts: HashMap<String, usize>,
@@ -257,6 +263,9 @@ impl Shared {
             outboxes: HashMap::new(),
             away: HashMap::new(),
             away_notify: HashSet::new(),
+            accounts: HashMap::new(),
+            opers: HashSet::new(),
+            usernames: HashMap::new(),
             config,
             history,
             ip_counts: HashMap::new(),
@@ -373,10 +382,49 @@ impl Shared {
         Some(nick)
     }
 
-    /// Drop away / cap tracking for a disconnecting client (F1a).
+    /// Drop away / cap / account / oper tracking for a disconnecting client.
     pub fn clear_session_meta(&mut self, id: ClientId) {
         self.away.remove(&id);
         self.away_notify.remove(&id);
+        self.accounts.remove(&id);
+        self.opers.remove(&id);
+        self.usernames.remove(&id);
+    }
+
+    pub fn set_account(&mut self, id: ClientId, name: String) {
+        self.accounts.insert(id, name);
+    }
+
+    pub fn account_name(&self, id: ClientId) -> Option<&str> {
+        self.accounts.get(&id).map(String::as_str)
+    }
+
+    pub fn set_oper(&mut self, id: ClientId, enabled: bool) {
+        if enabled {
+            self.opers.insert(id);
+        } else {
+            self.opers.remove(&id);
+        }
+    }
+
+    pub fn is_oper_id(&self, id: ClientId) -> bool {
+        self.opers.contains(&id)
+    }
+
+    pub fn oper_ids(&self) -> Vec<ClientId> {
+        self.opers.iter().copied().collect()
+    }
+
+    pub fn oper_count(&self) -> usize {
+        self.opers.len()
+    }
+
+    pub fn set_username(&mut self, id: ClientId, user: String) {
+        self.usernames.insert(id, user);
+    }
+
+    pub fn username(&self, id: ClientId) -> Option<&str> {
+        self.usernames.get(&id).map(String::as_str)
     }
 
     pub fn set_away(&mut self, id: ClientId, message: String) {

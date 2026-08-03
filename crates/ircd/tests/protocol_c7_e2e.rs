@@ -102,7 +102,7 @@ async fn client_plus_tag_on_privmsg_preserved() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn isupport_advertises_chathistory_when_enabled() {
-    // Q4: 005 CHATHISTORY=<limit>; MSGREFTYPES absent (LATEST ignores refs).
+    // Q4: 005 CHATHISTORY=<limit> + MSGREFTYPES when history on (F3).
     use tempfile::tempdir;
     let dir = tempdir().unwrap();
     let path = dir.path().join("h.sqlite3");
@@ -117,8 +117,10 @@ async fn isupport_advertises_chathistory_when_enabled() {
             "want CHATHISTORY=200 matching latest clamp: {lines:?}"
         );
         assert!(
-            !lines.iter().any(|l| l.contains("MSGREFTYPES")),
-            "MSGREFTYPES must stay absent (honest): {lines:?}"
+            lines
+                .iter()
+                .any(|l| l.contains("MSGREFTYPES=msgid,timestamp")),
+            "MSGREFTYPES required when history on: {lines:?}"
         );
         w.write_all(b"QUIT :x\r\n").await.unwrap();
     })
