@@ -24,7 +24,7 @@ export PYTHONPATH="${ROOT}/tools/irctest${PYTHONPATH:+:$PYTHONPATH}"
 # selection of probes that exercise the same surface in-tree (protocol_c3_e2e).
 MARKERS="${IRCTEST_MARKERS:-(RFC1459 or RFC2812 or modern or IRCv3) and not Ergo and not deprecated and not strict and not services and not implementation-specific}"
 # Node-id / name allowlist for the first CI gate (expand as probes go green).
-KEXPR="${IRCTEST_K:-testPing or testPingNoToken or testPrivmsg or testPrivmsgToUser or testPrivmsgNonexistentChannel or testJoinNamreply or testInvalidCapSubcommand or testNoReq or testQuitDisconnects or testQuitErrors or (ChannelQuit and testQuit) or testPart}"
+KEXPR="${IRCTEST_K:-testPing or testPingNoToken or testPrivmsg or testPrivmsgToUser or testPrivmsgNonexistentChannel or testJoinNamreply or testInvalidCapSubcommand or testNoReq or testQuitDisconnects or testQuitErrors or (ChannelQuit and testQuit) or testPart or testAwayAck or testAwayPrivmsg or testAwayWhois or (testAway and not Userhost and not Empty) or testAwayNotify or testAwayNotifyOnJoin}"
 
 cd "$IRCTEST_DIR"
 set +e

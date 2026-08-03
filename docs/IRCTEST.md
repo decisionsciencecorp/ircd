@@ -50,6 +50,10 @@ and not services and not implementation-specific
 | `testInvalidCapSubcommand` / `testNoReq` | CAP negotiation without REQ of unsupported caps |
 | `testQuit` / `testQuitDisconnects` / `testQuitErrors` | QUIT fanout, ERROR ack, TCP close |
 | `testPart` | Channel leave |
+| `testAway` / `testAwayAck` / `testAwayPrivmsg` / `testAwayWhois` | AWAY set/clear + 301 on PRIVMSG/WHOIS (F1a) |
+| `testAwayNotify` / `testAwayNotifyOnJoin` | IRCv3 `away-notify` peer + join (F1a) |
+
+**Not yet in `-k` (F1d):** `testAwayUserhost` (needs USERHOST). Empty-message edge cases may stay out until proven green.
 
 **Advertised IRCv3 caps** (`cap-notify`, `message-tags`, `server-time`, `account-tag`, `batch`, plus conditional `sasl` / `draft/chathistory`) are **not** excluded with `-m 'not message-tags …'`. Full irctest modules for those caps are not yet in the curated `-k` list; wire conformance for advertised caps remains gated by in-tree **`protocol_c3_e2e`** (and Gate A A1: do not advertise without tests). Expand `-k` as individual irctest cases go green — never hide an advertised cap behind a marker exclusion.
 
