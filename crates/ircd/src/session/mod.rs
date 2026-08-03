@@ -32,6 +32,69 @@ enum LineOutcome {
     Eof,
 }
 
+/// `select!` arm tag — logic runs *outside* the macro so llvm/tarpaulin sees it (C9).
+enum IoEvent {
+    Outbox(Option<String>),
+    Read(std::io::Result<LineOutcome>),
+    Deadline,
+}
+
+async fn read_line_outcome<R: tokio::io::AsyncBufRead + Unpin>(
+    reader: &mut R,
+    line_buf: &mut Vec<u8>,
+    max_line: usize,
+) -> std::io::Result<LineOutcome> {
+    loop {
+        if line_buf.len() >= max_line {
+            return Ok(LineOutcome::Oversized);
+        }
+        let buf = reader.fill_buf().await?;
+        if buf.is_empty() {
+            return Ok(LineOutcome::Eof);
+        }
+        let room = max_line - line_buf.len();
+        let chunk_len = buf.len().min(room);
+        if let Some(pos) = buf[..chunk_len].iter().position(|&b| b == b'\n') {
+            let take = pos + 1;
+            line_buf.extend_from_slice(&buf[..take]);
+            reader.consume(take);
+            return Ok(LineOutcome::Complete);
+        }
+        line_buf.extend_from_slice(&buf[..chunk_len]);
+        reader.consume(chunk_len);
+        if line_buf.len() >= max_line {
+            return Ok(LineOutcome::Oversized);
+        }
+        // Partial line in buffer; loop for more (cancel-safe across select!).
+    }
+}
+
+async fn sleep_until_deadline(deadline_at: Option<Instant>) {
+    match deadline_at {
+        Some(at) => {
+            let now = Instant::now();
+            if at > now {
+                tokio::time::sleep(at.saturating_duration_since(now)).await;
+            }
+        }
+        None => std::future::pending::<()>().await,
+    }
+}
+
+fn session_deadline_at(
+    registered: bool,
+    session_start: Instant,
+    last_activity: Instant,
+    reg_deadline: Option<Duration>,
+    idle_deadline: Option<Duration>,
+) -> Option<Instant> {
+    if !registered {
+        reg_deadline.map(|d| session_start + d)
+    } else {
+        idle_deadline.map(|d| last_activity + d)
+    }
+}
+
 pub async fn handle_client<R, W>(
     reader: R,
     mut writer: W,
@@ -125,102 +188,68 @@ where
 
     // Event-driven select! between member outbox and buffered reads (H-07/H-08 / C9).
     // Coverage must not dictate production scheduling — prefer outbox (biased).
-    // read_until is cancel-safe: partial bytes stay in line_buf when outbox wins.
+    // fill_buf/consume is cancel-safe: partial bytes stay in line_buf when outbox wins.
     'session: loop {
         let raw = loop {
-            let deadline_at = if !registered {
-                reg_deadline.map(|d| session_start + d)
-            } else {
-                idle_deadline.map(|d| last_activity + d)
+            let deadline_at = session_deadline_at(
+                registered,
+                session_start,
+                last_activity,
+                reg_deadline,
+                idle_deadline,
+            );
+
+            let event = tokio::select! {
+                biased;
+                maybe = out_rx.recv() => IoEvent::Outbox(maybe),
+                outcome = read_line_outcome(&mut reader, &mut line_buf, max_line) => {
+                    IoEvent::Read(outcome)
+                }
+                _ = sleep_until_deadline(deadline_at) => IoEvent::Deadline,
             };
 
-            tokio::select! {
-                biased;
-                maybe = out_rx.recv() => {
-                    match maybe {
-                        None => return Ok(()),
-                        Some(raw_line) => {
-                            let line = adapt_bus_line(&raw_line, &enabled_caps);
-                            writer.write_all(line.as_bytes()).await?;
-                            if let Some(n) = nick.as_deref() {
-                                if let Some(raw) =
-                                    ircd_core::RawLine::parse(line.trim_end_matches(['\r', '\n']))
-                                {
-                                    if raw.command_eq("KICK")
-                                        && raw.params.get(1).map(|t| t.as_str()) == Some(n)
-                                    {
-                                        if let Some(chan) = raw.params.first() {
-                                            channels.remove(chan);
-                                        }
-                                    }
+            match event {
+                IoEvent::Outbox(None) => return Ok(()),
+                IoEvent::Outbox(Some(raw_line)) => {
+                    let line = adapt_bus_line(&raw_line, &enabled_caps);
+                    writer.write_all(line.as_bytes()).await?;
+                    if let Some(n) = nick.as_deref() {
+                        if let Some(raw) =
+                            ircd_core::RawLine::parse(line.trim_end_matches(['\r', '\n']))
+                        {
+                            if raw.command_eq("KICK")
+                                && raw.params.get(1).map(|t| t.as_str()) == Some(n)
+                            {
+                                if let Some(chan) = raw.params.first() {
+                                    channels.remove(chan);
                                 }
                             }
-                            continue;
                         }
                     }
+                    continue;
                 }
-                outcome = async {
-                    loop {
-                        if line_buf.len() >= max_line {
-                            return Ok::<_, std::io::Error>(LineOutcome::Oversized);
-                        }
-                        let buf = reader.fill_buf().await?;
-                        if buf.is_empty() {
-                            return Ok(LineOutcome::Eof);
-                        }
-                        let room = max_line - line_buf.len();
-                        let chunk_len = buf.len().min(room);
-                        if let Some(pos) = buf[..chunk_len].iter().position(|&b| b == b'\n') {
-                            let take = pos + 1;
-                            line_buf.extend_from_slice(&buf[..take]);
-                            reader.consume(take);
-                            return Ok(LineOutcome::Complete);
-                        }
-                        line_buf.extend_from_slice(&buf[..chunk_len]);
-                        reader.consume(chunk_len);
-                        if line_buf.len() >= max_line {
-                            return Ok(LineOutcome::Oversized);
-                        }
-                        // Partial line in kernel/user buffer; loop for more (cancel-safe).
-                    }
-                } => {
-                    match outcome {
-                        Ok(LineOutcome::Eof) => break 'session,
-                        Ok(LineOutcome::Oversized) => {
-                            let _ = writer
-                                .write_all(
-                                    format!(
-                                        "ERROR :Closing Link: [{peer}] (Input line too long)\r\n"
-                                    )
-                                    .as_bytes(),
-                                )
-                                .await;
-                            let _ = writer.flush().await;
-                            info!(%peer, max_line, "oversized IRC line; closing");
-                            break 'session;
-                        }
-                        Ok(LineOutcome::Complete) => {
-                            let raw = String::from_utf8_lossy(&line_buf).into_owned();
-                            line_buf.clear();
-                            break raw;
-                        }
-                        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
-                            break 'session;
-                        }
-                        Err(e) => return Err(e.into()),
-                    }
+                IoEvent::Read(Ok(LineOutcome::Eof)) => break 'session,
+                IoEvent::Read(Ok(LineOutcome::Oversized)) => {
+                    let _ = writer
+                        .write_all(
+                            format!("ERROR :Closing Link: [{peer}] (Input line too long)\r\n")
+                                .as_bytes(),
+                        )
+                        .await;
+                    let _ = writer.flush().await;
+                    info!(%peer, max_line, "oversized IRC line; closing");
+                    break 'session;
                 }
-                _ = async {
-                    match deadline_at {
-                        Some(at) => {
-                            let now = Instant::now();
-                            if at > now {
-                                tokio::time::sleep(at.saturating_duration_since(now)).await;
-                            }
-                        }
-                        None => std::future::pending::<()>().await,
-                    }
-                } => {
+                IoEvent::Read(Ok(LineOutcome::Complete)) => {
+                    let raw = String::from_utf8_lossy(&line_buf).into_owned();
+                    line_buf.clear();
+                    break raw;
+                }
+                IoEvent::Read(Err(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                    break 'session;
+                }
+                IoEvent::Read(Err(e)) => return Err(e.into()),
+                IoEvent::Deadline => {
                     if !registered {
                         if reg_deadline.is_some() {
                             let _ = writer
@@ -2149,5 +2178,56 @@ mod tests {
         set.insert("server-time".into());
         assert!(has_cap(&set, "SERVER-TIME"));
         assert!(!has_cap(&set, "message-tags"));
+    }
+
+    #[test]
+    fn session_deadline_at_reg_vs_idle() {
+        let start = Instant::now();
+        let act = start + Duration::from_secs(5);
+        assert!(session_deadline_at(false, start, act, None, Some(Duration::from_secs(1))).is_none());
+        let reg = session_deadline_at(
+            false,
+            start,
+            act,
+            Some(Duration::from_secs(10)),
+            Some(Duration::from_secs(1)),
+        );
+        assert_eq!(reg, Some(start + Duration::from_secs(10)));
+        let idle = session_deadline_at(
+            true,
+            start,
+            act,
+            Some(Duration::from_secs(10)),
+            Some(Duration::from_secs(30)),
+        );
+        assert_eq!(idle, Some(act + Duration::from_secs(30)));
+    }
+
+    #[tokio::test]
+    async fn read_line_outcome_complete_oversized_eof() {
+        use tokio::io::BufReader;
+        // Complete line
+        let mut r = BufReader::new(std::io::Cursor::new(b"PING :x\r\n".to_vec()));
+        let mut buf = Vec::new();
+        assert!(matches!(
+            read_line_outcome(&mut r, &mut buf, 64).await.unwrap(),
+            LineOutcome::Complete
+        ));
+        assert!(buf.ends_with(b"\n"));
+        buf.clear();
+        assert!(matches!(
+            read_line_outcome(&mut r, &mut buf, 64).await.unwrap(),
+            LineOutcome::Eof
+        ));
+
+        // Oversized without newline
+        let huge = vec![b'A'; 80];
+        let mut r = BufReader::new(std::io::Cursor::new(huge));
+        let mut buf = Vec::new();
+        assert!(matches!(
+            read_line_outcome(&mut r, &mut buf, 64).await.unwrap(),
+            LineOutcome::Oversized
+        ));
+        assert!(buf.len() >= 64);
     }
 }
