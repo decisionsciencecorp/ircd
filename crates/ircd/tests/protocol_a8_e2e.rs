@@ -82,9 +82,8 @@ async fn nick_casemap_collision_alice_alice() {
             {
                 let g = shared.lock().await;
                 assert!(
-                    g.nicks.contains_key(&ascii_casefold("Alice")),
-                    "map keys: {:?}",
-                    g.nicks.keys().collect::<Vec<_>>()
+                    g.has_nick_key(&ascii_casefold("Alice")),
+                    "Alice nick key missing"
                 );
             }
             w2.write_all(b"NICK alice\r\nUSER b 0 * :B\r\nQUIT :x\r\n")

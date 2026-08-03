@@ -320,7 +320,7 @@ async fn accept_tls(
         }
         let hs_timeout = {
             let g = shared.lock().await;
-            admission::handshake_timeout(&g.config)
+            admission::handshake_timeout(&g.config())
         };
         tokio::spawn(async move {
             let _permit = permit;

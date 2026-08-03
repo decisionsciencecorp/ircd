@@ -1,6 +1,6 @@
 //! Source-level guard: session must not hold `shared.lock()` across `.await` (H-05).
 
-/// Scan `session.rs` for `let … = shared.lock().await` blocks that contain `.await`
+/// Scan session sources for `let … = shared.lock().await` blocks that contain `.await`
 /// before the binding scope closes. Returns offending line numbers (1-based).
 pub fn find_lock_across_await(src: &str) -> Vec<usize> {
     let lines: Vec<&str> = src.lines().collect();
@@ -59,12 +59,17 @@ mod tests {
 
     #[test]
     fn session_rs_has_no_lock_across_await() {
-        let src = include_str!("session.rs");
-        let bad = find_lock_across_await(src);
-        assert!(
-            bad.is_empty(),
-            "shared.lock() held across .await at session.rs lines {bad:?}"
-        );
+        for (name, src) in [
+            ("session/mod.rs", include_str!("session/mod.rs")),
+            ("session/cap.rs", include_str!("session/cap.rs")),
+            ("session/register.rs", include_str!("session/register.rs")),
+        ] {
+            let bad = find_lock_across_await(src);
+            assert!(
+                bad.is_empty(),
+                "shared.lock() held across .await at {name} lines {bad:?}"
+            );
+        }
     }
 
     #[test]

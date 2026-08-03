@@ -106,4 +106,15 @@ mod tests {
         let dmode = fs::metadata(&nested).unwrap().permissions().mode() & 0o777;
         assert_eq!(dmode, 0o700);
     }
+
+    #[test]
+    fn ensure_private_missing_file_makes_parent_and_empty_dir_ok() {
+        assert!(ensure_private_dir(Path::new("")).is_ok());
+        let dir = tempdir().unwrap();
+        let nested = dir.path().join("nest").join("leaf.db");
+        // File does not exist yet — should ensure parent dir only.
+        ensure_private_file(&nested).unwrap();
+        assert!(nested.parent().unwrap().is_dir());
+        assert!(!nested.exists());
+    }
 }

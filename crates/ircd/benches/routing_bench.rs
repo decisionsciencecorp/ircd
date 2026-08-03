@@ -20,7 +20,7 @@ fn setup_channel(n: usize) -> (Shared, Vec<mpsc::Receiver<String>>) {
         ch.members.insert(i);
         rxs.push(rx);
     }
-    s.channels.insert("#bench".into(), ch);
+    *s.channel_or_default("#bench".into()) = ch;
     (s, rxs)
 }
 
@@ -58,7 +58,7 @@ fn fanout_scaling(c: &mut Criterion) {
         let mut ch = ChannelState::default();
         ch.members.insert(1);
         ch.members.insert(2);
-        s.channels.insert("#bench".into(), ch);
+        *s.channel_or_default("#bench".into()) = ch;
         b.iter(|| {
             while rx_slow.try_recv().is_ok() {}
             while rx_fast.try_recv().is_ok() {}
@@ -73,7 +73,7 @@ fn fanout_scaling(c: &mut Criterion) {
         let shared = Shared::new(Arc::new(Config::default()), None);
         let line = line.to_string();
         b.iter(|| {
-            let _ = shared.bus.send(ircd::BusMsg {
+            let _ = shared.bus_sender().send(ircd::BusMsg {
                 target: "#bench".into(),
                 line: line.clone(),
                 skip_conn: 0,

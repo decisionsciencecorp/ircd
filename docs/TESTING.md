@@ -147,6 +147,16 @@ Honest fanout sizes: **1 / 10 / 100 / 1000** recipients (`fanout_channel/*`). Sn
 
 Gaps filed: no automated Tauri/Mac harness until those clients exist. Server surface for queries is covered by C1 wire tests.
 
+## Handler structure (C4 / H-14)
+
+| Piece | Location |
+|-------|----------|
+| Typed `Command` | `ircd-core::Command` (`command.rs`) — classify `RawLine` before dispatch |
+| CAP / SASL | `session/cap.rs` |
+| Registration welcome | `session/register.rs` |
+| Connection actor + post-register match | `session/mod.rs` |
+| Privatized `Shared` | `state.rs` — fields private; nick/channel/fanout via methods |
+
 ## CI quality gates (C5)
 
 GitHub Actions: `.github/workflows/ci.yml`

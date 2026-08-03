@@ -26,6 +26,7 @@
 #![forbid(unsafe_code)]
 
 pub mod casemap;
+pub mod command;
 pub mod tags;
 
 use std::fmt;
@@ -33,6 +34,7 @@ use std::fmt;
 use tags::split_tags;
 
 pub use casemap::{ascii_casefold, ChannelKey, ChannelName, Nick, NickKey};
+pub use command::Command;
 
 /// True if `s` contains ASCII control characters (including NUL/CR/LF) that must
 /// never appear in nick, user, channel, or topic fields on the wire.

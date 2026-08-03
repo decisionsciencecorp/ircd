@@ -59,9 +59,6 @@ impl Nick {
         {
             return Err("charset");
         }
-        if raw.chars().any(|c| c.is_control()) {
-            return Err("control");
-        }
         Ok(Self(raw.to_string()))
     }
 
@@ -124,5 +121,23 @@ mod tests {
     fn channel_name_parse() {
         assert!(ChannelName::parse("#ok", 50).is_ok());
         assert!(ChannelName::parse("bad", 50).is_err());
+    }
+
+    #[test]
+    fn display_and_keys() {
+        let nk = NickKey::from_raw("Alice");
+        assert_eq!(nk.as_str(), "alice");
+        assert_eq!(format!("{nk}"), "alice");
+        let ck = ChannelKey::from_raw("#Lab");
+        assert_eq!(ck.as_str(), "#lab");
+        let n = Nick::parse("bob_1", 30).unwrap();
+        assert_eq!(n.as_str(), "bob_1");
+        assert_eq!(n.key().as_str(), "bob_1");
+        assert!(Nick::parse("x", 0).is_err()); // too long / empty path
+        assert!(Nick::parse("bad!", 30).is_err());
+        let ch = ChannelName::parse("#ok", 50).unwrap();
+        assert_eq!(ch.as_str(), "#ok");
+        assert_eq!(ch.key().as_str(), "#ok");
+        assert!(ChannelName::parse("nohash", 50).is_err());
     }
 }

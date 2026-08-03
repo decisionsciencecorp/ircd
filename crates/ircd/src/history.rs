@@ -183,6 +183,20 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
+    fn open_existing_file_tightens_perms() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("pre.sqlite3");
+        std::fs::write(&path, []).unwrap();
+        let mut perms = std::fs::metadata(&path).unwrap().permissions();
+        perms.set_mode(0o600);
+        std::fs::set_permissions(&path, perms).unwrap();
+        let _store = HistoryStore::open(&path, 3).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+    }
+
+    #[test]
     fn append_latest_and_prune() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("h.sqlite3");

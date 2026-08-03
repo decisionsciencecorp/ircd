@@ -181,9 +181,14 @@ async fn a5_plaintext_sasl_blocked_when_tls_required() {
 
 #[test]
 fn a6_session_has_no_lock_across_await() {
-    let src = include_str!("../src/session.rs");
-    let bad = find_lock_across_await(src);
-    assert!(bad.is_empty(), "lock-across-await at {bad:?}");
+    for src in [
+        include_str!("../src/session/mod.rs"),
+        include_str!("../src/session/cap.rs"),
+        include_str!("../src/session/register.rs"),
+    ] {
+        let bad = find_lock_across_await(src);
+        assert!(bad.is_empty(), "lock-across-await at {bad:?}");
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
