@@ -1,7 +1,7 @@
 # Full client protocol acceptance matrix — dsc-ircd
 
 **Bar (Mark, 2026-08-03):** full Modern IRC + advertised IRCv3 — **not** a v0 subset.  
-**Tip probed:** `9090a5b`+ (F0 matrix; F1a AWAY in progress / landed — update tip on F1a close)  
+**Tip probed:** `61d9043` (F0 matrix + F1a AWAY/`away-notify`)  
 **Program:** Tasks [Doc #976](https://tasks.decisionsciencecorp.com/admin/doc.php?id=976) · Matrix [Doc #977](https://tasks.decisionsciencecorp.com/admin/doc.php?id=977) · Epic [#2251](https://tasks.decisionsciencecorp.com/admin/view.php?id=2251) · F0 [#2252](https://tasks.decisionsciencecorp.com/admin/view.php?id=2252)  
 **Standing coverage:** [#2214](https://tasks.decisionsciencecorp.com/admin/view.php?id=2214) (≥90% tarpaulin after code slices)  
 **irctest allowlist:** [`IRCTEST.md`](IRCTEST.md)
