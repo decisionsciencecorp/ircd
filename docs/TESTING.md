@@ -134,6 +134,19 @@ cargo bench -p ircd --bench routing_bench
 
 Honest fanout sizes: **1 / 10 / 100 / 1000** recipients (`fanout_channel/*`). Snapshot (NewDev, 2026-08-02): ~168 ns / 1.37 µs / 14.1 µs / 172 µs; slow-consumer policy ~486 ns; legacy `bus.send` ~48 ns (not member-accurate).
 
+
+
+## C1b interop smoke
+
+| Path | Status (2026-08-03) |
+|------|---------------------|
+| Terminal ( + ) | Green on NewDev against local plaintext listen |
+| Protocol duplex e2e () | Green |
+| Tauri / web IRC | **Stub** — client repo not in-tree yet; re-run when present |
+| Native Mac client | **Stub** — same; re-run when present |
+
+Gaps filed: no automated Tauri/Mac harness until those clients exist. Server surface for queries is covered by C1 wire tests.
+
 ## Tasks trail
 
 | ID | Slice |
