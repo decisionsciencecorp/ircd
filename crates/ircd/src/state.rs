@@ -31,6 +31,12 @@ pub struct ChannelState {
     pub mode_n: bool,
     /// +t — only ops may set topic
     pub mode_t: bool,
+    /// +i — invite-only
+    pub mode_i: bool,
+    /// Simple ban masks (nick!user@host or nick) — baseline +b.
+    pub bans: HashSet<String>,
+    /// Pending invites (ClientId) cleared on JOIN or channel destroy.
+    pub invites: HashSet<ClientId>,
 }
 
 impl Default for ChannelState {
@@ -41,6 +47,9 @@ impl Default for ChannelState {
             topic: None,
             mode_n: true,
             mode_t: true,
+            mode_i: false,
+            bans: HashSet::new(),
+            invites: HashSet::new(),
         }
     }
 }
@@ -150,7 +159,22 @@ impl ChannelState {
         if self.mode_t {
             s.push('t');
         }
+        if self.mode_i {
+            s.push('i');
+        }
         s
+    }
+
+    /// Match nick!user@host against stored ban masks (exact or nick-only).
+    pub fn is_banned(&self, nick: &str, user: &str, host: &str) -> bool {
+        let full = format!("{nick}!{user}@{host}");
+        let nick_l = nick.to_ascii_lowercase();
+        self.bans.iter().any(|m| {
+            let ml = m.to_ascii_lowercase();
+            ml == full.to_ascii_lowercase()
+                || ml == nick_l
+                || ml == format!("{nick_l}!*@*")
+        })
     }
 
     pub fn is_op(&self, id: ClientId) -> bool {
@@ -462,4 +486,13 @@ mod tests {
         assert_eq!(parts.join(" ").split_whitespace().count(), 20);
     }
 
+    #[test]
+    fn is_banned_matches_nick() {
+        let mut ch = ChannelState::default();
+        ch.bans.insert("banned".into());
+        assert!(ch.is_banned("banned", "user", "dsc.local"));
+        assert!(!ch.is_banned("other", "user", "dsc.local"));
+        ch.bans.insert("x!*@*".into());
+        assert!(ch.is_banned("x", "a", "b"));
+    }
 }

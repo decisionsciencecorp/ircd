@@ -79,3 +79,11 @@ Admission runs before the WS upgrade. Policy helpers: `ws_policy` / `evaluate_ws
 ## Standalone queries (C1)
 
 Registered clients may issue: `PRIVMSG`/`NOTICE` (channel + nick), `NAMES`, `LIST`, `WHO`, `WHOIS`, `MOTD`, `VERSION`, `LUSERS`. Direct `PRIVMSG` to unknown nick → **401**; missing params → **461**. `NOTICE` stays silent on errors.
+
+
+## Moderation (C2)
+
+- `INVITE nick #chan` — ops (or any member when channel is not +i); numeric **341**; target receives INVITE; invite-only (+i) JOIN needs prior invite (**473** otherwise).
+- `MODE #chan +b/-b mask` — nick or `nick!*@*` masks; JOIN of banned nick → **474**. `MODE #chan b` lists bans (**367/368**).
+- `MODE #chan +i/-i` — invite-only.
+- `PART #chan :reason` and `QUIT :reason` propagate reasons on the fanout line.

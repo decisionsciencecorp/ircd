@@ -178,6 +178,7 @@ where
     let mut line_buf: Vec<u8> = Vec::with_capacity(256);
     let max_line = cfg.limits.max_line_bytes.max(64);
     let mut channels: HashSet<String> = HashSet::new();
+    let mut quit_reason: Option<String> = None;
     let mut account: Option<String> = None;
     let mut sasl_state = SaslState::Idle;
     let has_accounts = !cfg.accounts.is_empty();
@@ -448,6 +449,11 @@ where
                 }
 
                 if msg.command_eq("QUIT") {
+                    quit_reason = msg
+                        .params
+                        .first()
+                        .cloned()
+                        .filter(|r| !r.is_empty());
                     break;
                 }
 
@@ -560,33 +566,54 @@ where
                             {
                                 Ok(None)
                             } else {
-                                let (topic, members, ops, over) = {
-                                    let ch = g.channels.entry(chan.to_string()).or_default();
-                                    if ch.members.len() >= cfg.limits.max_members_per_channel {
-                                        (None, Default::default(), Default::default(), true)
+                                let nick_chk = nick.as_deref().unwrap_or("*");
+                                let user_chk = user.as_deref().unwrap_or("user");
+                                let blocked = if let Some(ch) = g.channels.get(chan) {
+                                    if ch.is_banned(nick_chk, user_chk, "dsc.local") {
+                                        Some(474)
+                                    } else if ch.mode_i
+                                        && !ch.invites.contains(&conn_id)
+                                        && !is_oper
+                                    {
+                                        Some(473)
                                     } else {
-                                        let first = ch.members.is_empty();
-                                        ch.members.insert(conn_id);
-                                        if first {
-                                            ch.ops.insert(conn_id);
-                                        }
-                                        (
-                                            ch.topic.clone(),
-                                            ch.members.clone(),
-                                            ch.ops.clone(),
-                                            false,
-                                        )
+                                        None
                                     }
-                                };
-                                if over {
-                                    Err(471)
                                 } else {
-                                    let snap = crate::state::NamesSnapshot::from_sets(
-                                        &members,
-                                        &ops,
-                                        &g.id_to_nick,
-                                    );
-                                    Ok(Some((snap, topic)))
+                                    None
+                                };
+                                if let Some(code) = blocked {
+                                    Err(code)
+                                } else {
+                                    let (topic, members, ops, over) = {
+                                        let ch = g.channels.entry(chan.to_string()).or_default();
+                                        if ch.members.len() >= cfg.limits.max_members_per_channel {
+                                            (None, Default::default(), Default::default(), true)
+                                        } else {
+                                            let first = ch.members.is_empty();
+                                            ch.members.insert(conn_id);
+                                            ch.invites.remove(&conn_id);
+                                            if first {
+                                                ch.ops.insert(conn_id);
+                                            }
+                                            (
+                                                ch.topic.clone(),
+                                                ch.members.clone(),
+                                                ch.ops.clone(),
+                                                false,
+                                            )
+                                        }
+                                    };
+                                    if over {
+                                        Err(471)
+                                    } else {
+                                        let snap = crate::state::NamesSnapshot::from_sets(
+                                            &members,
+                                            &ops,
+                                            &g.id_to_nick,
+                                        );
+                                        Ok(Some((snap, topic)))
+                                    }
                                 }
                             }
                         };
@@ -602,6 +629,18 @@ where
                             Err(471) => {
                                 writer.write_all(
                                     numeric(server_name, 471, nick_s, &[chan, "Cannot join channel (+l)"]).as_bytes(),
+                                ).await?;
+                                continue;
+                            }
+                            Err(473) => {
+                                writer.write_all(
+                                    numeric(server_name, 473, nick_s, &[chan, "Cannot join channel (+i)"]).as_bytes(),
+                                ).await?;
+                                continue;
+                            }
+                            Err(474) => {
+                                writer.write_all(
+                                    numeric(server_name, 474, nick_s, &[chan, "Cannot join channel (+b)"]).as_bytes(),
                                 ).await?;
                                 continue;
                             }
@@ -802,7 +841,12 @@ where
                         continue;
                     }
                     channels.remove(chan);
-                    let line = format!(":{prefix} PART {chan}\r\n");
+                    let part_reason = msg.params.get(1).map(String::as_str).unwrap_or("");
+                    let line = if part_reason.is_empty() {
+                        format!(":{prefix} PART {chan}\r\n")
+                    } else {
+                        format!(":{prefix} PART {chan} :{part_reason}\r\n")
+                    };
                     writer.write_all(line.as_bytes()).await?;
                     {
                         let mut g = shared.lock().await;
@@ -1041,6 +1085,46 @@ where
                                     applied.push('n');
                                 }
                             }
+                            'i' => {
+                                let mut g = shared.lock().await;
+                                if let Some(chan) = g.channels.get_mut(target.as_str()) {
+                                    chan.mode_i = adding;
+                                    applied.push(if adding { '+' } else { '-' });
+                                    applied.push('i');
+                                }
+                            }
+                            'b' => {
+                                let Some(mask) = mode_arg.clone() else {
+                                    // List bans
+                                    let bans = {
+                                        let g = shared.lock().await;
+                                        g.channels
+                                            .get(target.as_str())
+                                            .map(|c| c.bans.iter().cloned().collect::<Vec<_>>())
+                                            .unwrap_or_default()
+                                    };
+                                    for b in bans {
+                                        writer.write_all(
+                                            numeric(server_name, 367, nick_s, &[target.as_str(), b.as_str()]).as_bytes(),
+                                        ).await?;
+                                    }
+                                    writer.write_all(
+                                        numeric(server_name, 368, nick_s, &[target.as_str(), "End of Channel Ban List"]).as_bytes(),
+                                    ).await?;
+                                    continue;
+                                };
+                                let mut g = shared.lock().await;
+                                if let Some(chan) = g.channels.get_mut(target.as_str()) {
+                                    if adding {
+                                        chan.bans.insert(mask.clone());
+                                    } else {
+                                        chan.bans.remove(&mask);
+                                    }
+                                    applied.push(if adding { '+' } else { '-' });
+                                    applied.push('b');
+                                    applied_args.push(mask);
+                                }
+                            }
                             _ => {
                                 writer.write_all(
                                     numeric(server_name, 472, nick_s, &[&ch.to_string(), "is unknown mode char to me"]).as_bytes(),
@@ -1058,6 +1142,52 @@ where
                         writer.write_all(line.as_bytes()).await?;
                         let _ = shared.lock().await.fanout_channel(target.as_str(), &line, conn_id);
                     }
+                    continue;
+                }
+
+
+                if msg.command_eq("INVITE") {
+                    let (Some(who), Some(chan)) = (msg.params.first(), msg.params.get(1)) else {
+                        writer.write_all(
+                            numeric(server_name, 461, nick_s, &["INVITE", "Not enough parameters"]).as_bytes(),
+                        ).await?;
+                        continue;
+                    };
+                    let (allowed, tid) = {
+                        let g = shared.lock().await;
+                        let tid = g.nicks.get(&ascii_casefold(who)).copied();
+                        let allowed = match g.channels.get(chan.as_str()) {
+                            Some(ch) if ch.members.contains(&conn_id) => {
+                                is_oper || ch.is_op(conn_id) || !ch.mode_i
+                            }
+                            Some(_) => false,
+                            None => false,
+                        };
+                        (allowed, tid)
+                    };
+                    if !allowed {
+                        writer.write_all(
+                            numeric(server_name, 482, nick_s, &[chan.as_str(), "You're not channel operator"]).as_bytes(),
+                        ).await?;
+                        continue;
+                    }
+                    let Some(tid) = tid else {
+                        writer.write_all(
+                            numeric(server_name, 401, nick_s, &[who.as_str(), "No such nick/channel"]).as_bytes(),
+                        ).await?;
+                        continue;
+                    };
+                    {
+                        let mut g = shared.lock().await;
+                        if let Some(ch) = g.channels.get_mut(chan.as_str()) {
+                            ch.invites.insert(tid);
+                        }
+                    }
+                    writer.write_all(
+                        numeric(server_name, 341, nick_s, &[who.as_str(), chan.as_str()]).as_bytes(),
+                    ).await?;
+                    let line = format!(":{prefix} INVITE {who} :{chan}\r\n");
+                    let _ = shared.lock().await.fanout_ids(&[tid], &line);
                     continue;
                 }
 
@@ -1482,7 +1612,8 @@ where
         g.id_to_nick.remove(&conn_id);
         for chan in &channels {
             let user_s = user.as_deref().unwrap_or("user");
-            let line = format!(":{n}!{user_s}@dsc.local QUIT :Connection closed\r\n");
+            let reason = quit_reason.as_deref().unwrap_or("Connection closed");
+            let line = format!(":{n}!{user_s}@dsc.local QUIT :{reason}\r\n");
             let _ = g.fanout_channel(chan, &line, conn_id);
             if let Some(ch) = g.channels.get_mut(chan) {
                 ch.remove_member(conn_id);
