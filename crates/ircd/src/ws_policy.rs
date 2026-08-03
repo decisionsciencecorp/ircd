@@ -51,11 +51,7 @@ mod tests {
     fn missing_origin_policy() {
         assert!(origin_allowed(None, &[], true));
         assert!(!origin_allowed(None, &[], false));
-        assert!(!origin_allowed(
-            Some("https://evil.test"),
-            &[],
-            true
-        ));
+        assert!(!origin_allowed(Some("https://evil.test"), &[], true));
     }
 
     #[test]

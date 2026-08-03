@@ -66,7 +66,8 @@ impl HistoryStore {
         let db = Connection::open(path).with_context(|| format!("open {}", path.display()))?;
         {
             use std::os::unix::fs::PermissionsExt;
-            let meta = std::fs::metadata(path).with_context(|| format!("stat {}", path.display()))?;
+            let meta =
+                std::fs::metadata(path).with_context(|| format!("stat {}", path.display()))?;
             let mut perms = meta.permissions();
             perms.set_mode(0o600);
             std::fs::set_permissions(path, perms)
@@ -187,9 +188,7 @@ mod tests {
         let path = dir.path().join("h.sqlite3");
         let store = HistoryStore::open(&path, 3).unwrap();
         for i in 0..5 {
-            store
-                .append("#lab", "a!b@c", &format!("msg{i}"))
-                .unwrap();
+            store.append("#lab", "a!b@c", &format!("msg{i}")).unwrap();
         }
         let rows = store.latest("#lab", 50).unwrap();
         assert_eq!(rows.len(), 3);

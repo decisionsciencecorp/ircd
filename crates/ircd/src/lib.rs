@@ -3,15 +3,15 @@
 //! The `ircd` binary is a thin CLI wrapper around this crate.
 
 pub mod admission;
-pub mod fs_perms;
-pub mod ws_policy;
 pub mod config;
+pub mod fs_perms;
 pub mod history;
 pub mod lock_discipline;
 pub mod session;
 pub mod state;
 pub mod tls;
 pub mod ws;
+pub mod ws_policy;
 
 pub use config::Config;
 pub use history::HistoryStore;

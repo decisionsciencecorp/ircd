@@ -222,9 +222,11 @@ where
             println!("<< {display}");
             if let Some(msg) = ircd_core::RawLine::parse(display) {
                 if msg.command_eq("CAP")
-                    && msg.params.get(1).map(|s| {
-                        s.eq_ignore_ascii_case("ACK") || s.eq_ignore_ascii_case("NAK")
-                    }).unwrap_or(false)
+                    && msg
+                        .params
+                        .get(1)
+                        .map(|s| s.eq_ignore_ascii_case("ACK") || s.eq_ignore_ascii_case("NAK"))
+                        .unwrap_or(false)
                 {
                     break;
                 }

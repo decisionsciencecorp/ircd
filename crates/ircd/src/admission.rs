@@ -40,9 +40,7 @@ pub fn handshake_semaphore(cfg: &Config) -> Arc<Semaphore> {
 }
 
 /// Try to take a handshake slot; returns `None` if the cap is saturated.
-pub async fn try_acquire_handshake(
-    sem: &Semaphore,
-) -> Option<SemaphorePermit<'_>> {
+pub async fn try_acquire_handshake(sem: &Semaphore) -> Option<SemaphorePermit<'_>> {
     sem.try_acquire().ok()
 }
 
@@ -88,17 +86,22 @@ mod tests {
         let shared = Arc::new(Mutex::new(Shared::new(Arc::new(cfg), None)));
         let peer = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(9, 9, 9, 9)), 1);
         assert!(admit_early(&shared, peer).await.is_ok());
-        assert_eq!(admit_early(&shared, peer).await, Err("Too many connections"));
+        assert_eq!(
+            admit_early(&shared, peer).await,
+            Err("Too many connections")
+        );
         shared.lock().await.release(peer);
         assert!(admit_early(&shared, peer).await.is_ok());
     }
 
     #[tokio::test]
     async fn handshake_semaphore_bounds() {
-        let mut cfg = Config::default();
-        cfg.security = SecuritySection {
-            max_handshake_inflight: 1,
-            ..SecuritySection::default()
+        let cfg = Config {
+            security: SecuritySection {
+                max_handshake_inflight: 1,
+                ..SecuritySection::default()
+            },
+            ..Config::default()
         };
         let sem = handshake_semaphore(&cfg);
         let p1 = try_acquire_handshake(&sem).await;

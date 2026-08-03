@@ -22,14 +22,23 @@ async fn part_when_not_member_returns_442_no_broadcast() {
             "non-member PART must 442: {bob:?}"
         );
         assert!(
-            !bob.iter().any(|l| l.contains("PART #lab") && !l.contains("442")),
+            !bob.iter()
+                .any(|l| l.contains("PART #lab") && !l.contains("442")),
             "bob must not get successful PART echo: {bob:?}"
         );
         // alice should not see a bob PART while waiting briefly
-        w1.write_all(b"PRIVMSG #lab :ping\r\nQUIT :x\r\n").await.unwrap();
-        let alice = read_until(&mut r1, |l| l.iter().any(|x| x.contains("ERROR") || x.contains("QUIT") || l.len() > 8)).await;
+        w1.write_all(b"PRIVMSG #lab :ping\r\nQUIT :x\r\n")
+            .await
+            .unwrap();
+        let alice = read_until(&mut r1, |l| {
+            l.iter()
+                .any(|x| x.contains("ERROR") || x.contains("QUIT") || l.len() > 8)
+        })
+        .await;
         assert!(
-            !alice.iter().any(|l| l.contains("PART") && l.contains("bob")),
+            !alice
+                .iter()
+                .any(|l| l.contains("PART") && l.contains("bob")),
             "alice must not see PART from non-member: {alice:?}"
         );
     })

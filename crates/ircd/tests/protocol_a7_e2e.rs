@@ -35,7 +35,9 @@ async fn max_channels_server_wide_returns_405() {
     cfg.security.registration_timeout_secs = 0;
     let shared = Arc::new(Mutex::new(Shared::new(Arc::new(cfg), None)));
     with_two_clients(shared, |(mut w1, mut r1), (mut w2, mut r2)| async move {
-        w1.write_all(b"NICK a\r\nUSER a 0 * :A\r\nJOIN #only\r\n").await.unwrap();
+        w1.write_all(b"NICK a\r\nUSER a 0 * :A\r\nJOIN #only\r\n")
+            .await
+            .unwrap();
         let _ = read_until(&mut r1, |l| l.iter().any(|x| x.contains("366"))).await;
         w2.write_all(b"NICK b\r\nUSER b 0 * :B\r\nJOIN #other\r\nQUIT :x\r\n")
             .await
@@ -57,7 +59,9 @@ async fn max_members_returns_471() {
     cfg.security.registration_timeout_secs = 0;
     let shared = Arc::new(Mutex::new(Shared::new(Arc::new(cfg), None)));
     with_two_clients(shared, |(mut w1, mut r1), (mut w2, mut r2)| async move {
-        w1.write_all(b"NICK a\r\nUSER a 0 * :A\r\nJOIN #full\r\n").await.unwrap();
+        w1.write_all(b"NICK a\r\nUSER a 0 * :A\r\nJOIN #full\r\n")
+            .await
+            .unwrap();
         let _ = read_until(&mut r1, |l| l.iter().any(|x| x.contains("366"))).await;
         w2.write_all(b"NICK b\r\nUSER b 0 * :B\r\nJOIN #full\r\nQUIT :x\r\n")
             .await
@@ -84,7 +88,9 @@ async fn topic_too_long_rejected() {
             .unwrap();
         let lines = read_until(&mut r, |l| l.iter().any(|x| x.contains("461"))).await;
         assert!(
-            lines.iter().any(|l| l.contains("461") && l.contains("TOPIC")),
+            lines
+                .iter()
+                .any(|l| l.contains("461") && l.contains("TOPIC")),
             "{lines:?}"
         );
     })

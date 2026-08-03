@@ -171,9 +171,7 @@ impl ChannelState {
         let nick_l = nick.to_ascii_lowercase();
         self.bans.iter().any(|m| {
             let ml = m.to_ascii_lowercase();
-            ml == full.to_ascii_lowercase()
-                || ml == nick_l
-                || ml == format!("{nick_l}!*@*")
+            ml == full.to_ascii_lowercase() || ml == nick_l || ml == format!("{nick_l}!*@*")
         })
     }
 
@@ -449,7 +447,6 @@ mod tests {
         assert_eq!(st.delivered, 1);
         assert_eq!(rx.try_recv().unwrap(), "KICK\r\n");
     }
-
 
     #[test]
     fn names_snapshot_formats_off_channel() {

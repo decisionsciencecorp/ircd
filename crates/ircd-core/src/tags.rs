@@ -73,17 +73,16 @@ pub fn adapt_bus_line(line: &str, caps: &HashSet<String>) -> String {
         if part.is_empty() {
             continue;
         }
-        if part.starts_with("msgid=") && want_msg {
-            keep.push(part);
-        } else if part.starts_with("time=") && (want_time || want_msg) {
-            keep.push(part);
-        } else if part.starts_with("account=") && (want_account || want_msg) {
-            keep.push(part);
-        } else if want_msg
-            && !part.starts_with("msgid=")
-            && !part.starts_with("time=")
-            && !part.starts_with("account=")
-        {
+        let retain = if part.starts_with("msgid=") {
+            want_msg
+        } else if part.starts_with("time=") {
+            want_time || want_msg
+        } else if part.starts_with("account=") {
+            want_account || want_msg
+        } else {
+            want_msg
+        };
+        if retain {
             keep.push(part);
         }
     }

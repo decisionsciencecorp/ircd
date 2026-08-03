@@ -25,19 +25,14 @@
 
 #![forbid(unsafe_code)]
 
-pub mod tags;
 pub mod casemap;
+pub mod tags;
 
 use std::fmt;
 
 use tags::split_tags;
 
 pub use casemap::{ascii_casefold, ChannelKey, ChannelName, Nick, NickKey};
-
-/// IRC message line without trailing CR/LF.
-///
-/// Optional IRCv3 client/server tags are captured in [`RawLine::tags`] and are
-/// not part of [`RawLine::command`].
 
 /// True if `s` contains ASCII control characters (including NUL/CR/LF) that must
 /// never appear in nick, user, channel, or topic fields on the wire.
@@ -55,6 +50,10 @@ pub fn valid_channel_name(s: &str, max_len: usize) -> bool {
         && !s.contains(',')
 }
 
+/// IRC message line without trailing CR/LF.
+///
+/// Optional IRCv3 client/server tags are captured in [`RawLine::tags`] and are
+/// not part of [`RawLine::command`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RawLine {
     /// Raw tag string (`k=v;k2=v2`) without the leading `@`, when present.
@@ -235,10 +234,7 @@ mod tests {
             command: "PRIVMSG".into(),
             params: vec!["#c".into(), "hi there".into()],
         };
-        assert_eq!(
-            line.to_string(),
-            "@msgid=1 :n!u@h PRIVMSG #c :hi there"
-        );
+        assert_eq!(line.to_string(), "@msgid=1 :n!u@h PRIVMSG #c :hi there");
     }
 
     #[test]
@@ -248,7 +244,6 @@ mod tests {
         assert_eq!(server_notice("s", "x"), ":s NOTICE * :x\r\n");
     }
 }
-
 
 #[cfg(test)]
 mod field_validation_tests {

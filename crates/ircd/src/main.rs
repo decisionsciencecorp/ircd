@@ -4,11 +4,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
+use ircd::admission;
 use ircd::config::{self, Config};
 use ircd::history::HistoryStore;
 use ircd::session;
 use ircd::state::Shared;
-use ircd::admission;
 use ircd::tls;
 use ircd::ws;
 use ircd::VERSION;
@@ -105,7 +105,9 @@ fn parse_cli(argv: &[String]) -> Result<CliOverlay> {
             }
             "--tls-cert" => {
                 i += 1;
-                c.tls_cert = Some(PathBuf::from(argv.get(i).context("--tls-cert needs value")?));
+                c.tls_cert = Some(PathBuf::from(
+                    argv.get(i).context("--tls-cert needs value")?,
+                ));
             }
             "--tls-key" => {
                 i += 1;
@@ -194,7 +196,11 @@ async fn main() -> Result<()> {
     let cfg = Arc::new(merge_config(base, &cli)?);
 
     let history = if cfg.history.enabled {
-        match HistoryStore::open_with_retention(&cfg.history.path, cfg.history.max_per_channel, cfg.history.max_total_rows) {
+        match HistoryStore::open_with_retention(
+            &cfg.history.path,
+            cfg.history.max_per_channel,
+            cfg.history.max_total_rows,
+        ) {
             Ok(h) => {
                 info!("history sqlite {}", cfg.history.path.display());
                 Some(Arc::new(h))
@@ -236,7 +242,9 @@ async fn main() -> Result<()> {
                 let acceptor = tls::load_acceptor(&cert, &key)?;
                 info!("TLS IRC on {addr} (cert {})", cert.display());
                 let handshake_sem = Arc::clone(&handshake_sem);
-                joins.spawn(async move { accept_tls(listener, acceptor, shared, handshake_sem).await });
+                joins.spawn(
+                    async move { accept_tls(listener, acceptor, shared, handshake_sem).await },
+                );
             }
             (true, false) => {
                 info!("WebSocket IRC on {addr}");
@@ -282,8 +290,7 @@ async fn accept_plaintext(
         tokio::spawn(async move {
             let _permit = permit;
             let (reader, writer) = socket.into_split();
-            if let Err(e) =
-                session::handle_client(reader, writer, peer, shared, false, true).await
+            if let Err(e) = session::handle_client(reader, writer, peer, shared, false, true).await
             {
                 warn!(%peer, error = %e, "plaintext client session ended");
             }

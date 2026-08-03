@@ -17,7 +17,12 @@ use crate::state::Shared;
 use crate::ws_policy::{origin_allowed, subprotocol_acceptable};
 
 /// Run IRC session over an already-accepted WebSocket (plain or after TLS).
-pub async fn handle_websocket<S>(stream: S, peer: SocketAddr, shared: Arc<Mutex<Shared>>, secure: bool) -> Result<()>
+pub async fn handle_websocket<S>(
+    stream: S,
+    peer: SocketAddr,
+    shared: Arc<Mutex<Shared>>,
+    secure: bool,
+) -> Result<()>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
@@ -101,7 +106,10 @@ where
     result
 }
 
-pub async fn accept_plain_ws(listener: tokio::net::TcpListener, shared: Arc<Mutex<Shared>>) -> Result<()> {
+pub async fn accept_plain_ws(
+    listener: tokio::net::TcpListener,
+    shared: Arc<Mutex<Shared>>,
+) -> Result<()> {
     loop {
         let (socket, peer) = listener.accept().await?;
         let shared = Arc::clone(&shared);
@@ -148,7 +156,6 @@ pub async fn accept_tls_ws(
     }
 }
 
-
 /// Evaluate Origin + subprotocol policy from config (unit-testable entry for acceptors).
 pub fn evaluate_ws_handshake(
     origin: Option<&str>,
@@ -164,7 +171,6 @@ pub fn evaluate_ws_handshake(
     Ok(())
 }
 
-
 #[cfg(test)]
 mod eval_tests {
     use super::*;
@@ -172,10 +178,11 @@ mod eval_tests {
 
     #[test]
     fn evaluate_ws_handshake_respects_policy() {
-        let mut cfg = WebSocketSection::default();
-        cfg.allowed_origins = vec!["https://ok.test".into()];
-        cfg.allow_missing_origin = true;
-        cfg.require_irc_subprotocol = true;
+        let cfg = WebSocketSection {
+            allowed_origins: vec!["https://ok.test".into()],
+            allow_missing_origin: true,
+            require_irc_subprotocol: true,
+        };
         assert!(evaluate_ws_handshake(None, &["irc".into()], &cfg).is_ok());
         assert!(evaluate_ws_handshake(Some("https://evil"), &["irc".into()], &cfg).is_err());
         assert!(evaluate_ws_handshake(None, &["chat".into()], &cfg).is_err());

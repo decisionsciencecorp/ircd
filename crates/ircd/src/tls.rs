@@ -1,13 +1,12 @@
 //! TLS acceptor + lab self-signed cert generation.
 
-use std::fs::File;
-use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
 
 use crate::fs_perms::{create_private_file, ensure_private_dir, ensure_private_file};
+use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use rustls::ServerConfig;
 use tokio_rustls::TlsAcceptor;
@@ -26,9 +25,8 @@ pub fn load_acceptor(cert_path: &Path, key_path: &Path) -> Result<TlsAcceptor> {
 }
 
 fn load_certs(path: &Path) -> Result<Vec<CertificateDer<'static>>> {
-    let file = File::open(path).with_context(|| format!("open cert {}", path.display()))?;
-    let mut reader = BufReader::new(file);
-    let certs: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut reader)
+    let certs: Vec<CertificateDer<'static>> = CertificateDer::pem_file_iter(path)
+        .with_context(|| format!("open cert {}", path.display()))?
         .collect::<Result<Vec<_>, _>>()
         .with_context(|| format!("parse certs {}", path.display()))?;
     if certs.is_empty() {
@@ -38,24 +36,8 @@ fn load_certs(path: &Path) -> Result<Vec<CertificateDer<'static>>> {
 }
 
 fn load_key(path: &Path) -> Result<PrivateKeyDer<'static>> {
-    let file = File::open(path).with_context(|| format!("open key {}", path.display()))?;
-    let mut reader = BufReader::new(file);
-    let mut keys = rustls_pemfile::pkcs8_private_keys(&mut reader)
-        .collect::<Result<Vec<_>, _>>()
-        .with_context(|| format!("parse PKCS8 key {}", path.display()))?;
-    if let Some(key) = keys.pop() {
-        return Ok(PrivateKeyDer::Pkcs8(key));
-    }
-    // Retry as traditional RSA PEM
-    let file = File::open(path)?;
-    let mut reader = BufReader::new(file);
-    let mut keys = rustls_pemfile::rsa_private_keys(&mut reader)
-        .collect::<Result<Vec<_>, _>>()
-        .with_context(|| format!("parse RSA key {}", path.display()))?;
-    if let Some(key) = keys.pop() {
-        return Ok(PrivateKeyDer::Pkcs1(key));
-    }
-    bail!("no private key found in {}", path.display());
+    PrivateKeyDer::from_pem_file(path)
+        .with_context(|| format!("parse private key {}", path.display()))
 }
 
 /// Write a lab self-signed cert+key under `out_dir` (`cert.pem` / `key.pem`).

@@ -103,7 +103,6 @@ impl Default for LimitsSection {
     }
 }
 
-
 #[derive(Debug, Clone, Deserialize)]
 pub struct WebSocketSection {
     /// Exact Origin values allowed for browser clients. Empty = deny all Origins.
@@ -307,10 +306,10 @@ impl Default for Config {
 
 impl Config {
     pub fn load_file(path: &Path) -> Result<Self> {
-        let text = fs::read_to_string(path)
-            .with_context(|| format!("read config {}", path.display()))?;
-        let cfg: Config = toml::from_str(&text)
-            .with_context(|| format!("parse config {}", path.display()))?;
+        let text =
+            fs::read_to_string(path).with_context(|| format!("read config {}", path.display()))?;
+        let cfg: Config =
+            toml::from_str(&text).with_context(|| format!("parse config {}", path.display()))?;
         cfg.validate()?;
         Ok(cfg)
     }

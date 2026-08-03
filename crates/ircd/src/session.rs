@@ -7,7 +7,9 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use ircd_core::tags::{adapt_bus_line, prepend_tag};
-use ircd_core::{ascii_casefold, field_has_control, numeric, server_notice, valid_channel_name, Nick, RawLine};
+use ircd_core::{
+    ascii_casefold, field_has_control, numeric, server_notice, valid_channel_name, Nick, RawLine,
+};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Mutex;
 use tracing::info;
@@ -235,7 +237,7 @@ where
                         if session_start.elapsed() >= limit {
                             let _ = writer
                                 .write_all(b"ERROR :Closing Link: Registration timeout
-")
+        ")
                                 .await;
                             break;
                         }
@@ -244,7 +246,7 @@ where
                     if last_activity.elapsed() >= limit {
                         let _ = writer
                             .write_all(b"ERROR :Closing Link: Idle timeout
-")
+        ")
                             .await;
                         break;
                     }
@@ -260,7 +262,7 @@ where
                     format!("ERROR :Closing Link: [{peer}] (Input line too long)\r\n").as_bytes(),
                 )
                 .await;
-                        let _ = writer.flush().await;
+            let _ = writer.flush().await;
             info!(%peer, max_line, "oversized IRC line; closing");
             break;
         }
@@ -278,9 +280,7 @@ where
         flood_count = flood_count.saturating_add(1);
         if flood_count > flood_limit {
             let _ = writer
-                .write_all(
-                    format!("ERROR :Closing Link: [{peer}] (Excess Flood)\r\n").as_bytes(),
-                )
+                .write_all(format!("ERROR :Closing Link: [{peer}] (Excess Flood)\r\n").as_bytes())
                 .await;
             info!(%peer, "excess flood; closing");
             break;
@@ -290,1351 +290,1682 @@ where
             continue;
         };
 
-                if msg.command_eq("CAP") {
-                    handle_cap(
-                        &mut writer,
-                        server_name,
-                        &msg,
-                        nick.as_deref(),
-                        &mut cap_negotiating,
-                        &mut enabled_caps,
-                        &cap_list,
-                    ).await?;
-                    if msg.params.first().map(|s| s.eq_ignore_ascii_case("END")).unwrap_or(false) {
-                        try_register(
-                            &mut writer,
+        if msg.command_eq("CAP") {
+            handle_cap(
+                &mut writer,
+                server_name,
+                &msg,
+                nick.as_deref(),
+                &mut cap_negotiating,
+                &mut enabled_caps,
+                &cap_list,
+            )
+            .await?;
+            if msg
+                .params
+                .first()
+                .map(|s| s.eq_ignore_ascii_case("END"))
+                .unwrap_or(false)
+            {
+                try_register(
+                    &mut writer,
+                    server_name,
+                    &cfg.server.motd,
+                    &mut registered,
+                    nick.as_deref(),
+                    user.as_deref(),
+                    realname.as_deref(),
+                    cap_negotiating,
+                    cfg.server.max_nick_length,
+                    cfg.server.max_channel_length,
+                )
+                .await?;
+            }
+            continue;
+        }
+
+        if msg.command_eq("AUTHENTICATE") {
+            if !secure && cfg.security.tls_required_for_auth() {
+                writer
+                    .write_all(
+                        numeric(
                             server_name,
-                            &cfg.server.motd,
-                            &mut registered,
-                            nick.as_deref(),
-                            user.as_deref(),
-                            realname.as_deref(),
-                            cap_negotiating,
-                            cfg.server.max_nick_length,
-                            cfg.server.max_channel_length,
-                        ).await?;
+                            904,
+                            nick.as_deref().unwrap_or("*"),
+                            &["TLS required for authentication"],
+                        )
+                        .as_bytes(),
+                    )
+                    .await?;
+                continue;
+            }
+            handle_authenticate(
+                &mut writer,
+                server_name,
+                &msg,
+                nick.as_deref(),
+                user.as_deref(),
+                &cfg.accounts,
+                &enabled_caps,
+                &mut sasl_state,
+                &mut account,
+            )
+            .await?;
+            continue;
+        }
+
+        if msg.command_eq("NICK") {
+            let Some(desired_raw) = msg.params.first().cloned() else {
+                writer
+                    .write_all(
+                        numeric(
+                            server_name,
+                            431,
+                            nick.as_deref().unwrap_or("*"),
+                            &["No nickname given"],
+                        )
+                        .as_bytes(),
+                    )
+                    .await?;
+                continue;
+            };
+            let Ok(parsed) = Nick::parse(&desired_raw, cfg.server.max_nick_length) else {
+                writer
+                    .write_all(
+                        numeric(
+                            server_name,
+                            432,
+                            nick.as_deref().unwrap_or("*"),
+                            &["Erroneous Nickname"],
+                        )
+                        .as_bytes(),
+                    )
+                    .await?;
+                continue;
+            };
+            let desired = parsed.as_str().to_string();
+            let desired_key = parsed.key().as_str().to_string();
+            let old_nick = nick.clone();
+            let nick_taken = {
+                let mut g = shared.lock().await;
+                if let Some(other) = g.nicks.get(&desired_key) {
+                    if *other != conn_id {
+                        true
+                    } else {
+                        if let Some(ref old) = old_nick {
+                            g.nicks.remove(&ascii_casefold(old));
+                        }
+                        g.nicks.insert(desired_key.clone(), conn_id);
+                        g.id_to_nick.insert(conn_id, desired.clone());
+                        false
                     }
+                } else {
+                    if let Some(ref old) = old_nick {
+                        g.nicks.remove(&ascii_casefold(old));
+                    }
+                    g.nicks.insert(desired_key, conn_id);
+                    g.id_to_nick.insert(conn_id, desired.clone());
+                    false
+                }
+            };
+            if nick_taken {
+                writer
+                    .write_all(
+                        numeric(
+                            server_name,
+                            433,
+                            nick.as_deref().unwrap_or("*"),
+                            &[desired.as_str(), "Nickname is already in use"],
+                        )
+                        .as_bytes(),
+                    )
+                    .await?;
+                continue;
+            }
+            nick = Some(desired.clone());
+            if let Some(old) = old_nick {
+                if registered && old != desired {
+                    let user_s = user.as_deref().unwrap_or("user");
+                    let line = format!(":{old}!{user_s}@dsc.local NICK :{desired}\r\n");
+                    writer.write_all(line.as_bytes()).await?;
+                    let g = shared.lock().await;
+                    for chan in &channels {
+                        let _ = g.fanout_channel(chan, &line, conn_id);
+                    }
+                }
+            }
+            try_register(
+                &mut writer,
+                server_name,
+                &cfg.server.motd,
+                &mut registered,
+                nick.as_deref(),
+                user.as_deref(),
+                realname.as_deref(),
+                cap_negotiating,
+                cfg.server.max_nick_length,
+                cfg.server.max_channel_length,
+            )
+            .await?;
+            continue;
+        }
+
+        if msg.command_eq("USER") {
+            let Some(u) = msg.params.first().cloned() else {
+                continue;
+            };
+            if u.is_empty() || field_has_control(&u) || u.contains(' ') {
+                writer
+                    .write_all(
+                        numeric(
+                            server_name,
+                            461,
+                            nick.as_deref().unwrap_or("*"),
+                            &["USER", "Invalid username"],
+                        )
+                        .as_bytes(),
+                    )
+                    .await?;
+                continue;
+            }
+            let rn = msg
+                .params
+                .get(3)
+                .cloned()
+                .or_else(|| msg.params.last().cloned());
+            if let Some(ref r) = rn {
+                if field_has_control(r) {
+                    writer
+                        .write_all(
+                            numeric(
+                                server_name,
+                                461,
+                                nick.as_deref().unwrap_or("*"),
+                                &["USER", "Invalid realname"],
+                            )
+                            .as_bytes(),
+                        )
+                        .await?;
                     continue;
                 }
+            }
+            user = Some(u);
+            realname = rn;
+            try_register(
+                &mut writer,
+                server_name,
+                &cfg.server.motd,
+                &mut registered,
+                nick.as_deref(),
+                user.as_deref(),
+                realname.as_deref(),
+                cap_negotiating,
+                cfg.server.max_nick_length,
+                cfg.server.max_channel_length,
+            )
+            .await?;
+            continue;
+        }
 
-                if msg.command_eq("AUTHENTICATE") {
-                    if !secure && cfg.security.tls_required_for_auth() {
+        if msg.command_eq("PING") {
+            let token = msg
+                .params
+                .first()
+                .map(String::as_str)
+                .unwrap_or(server_name);
+            writer
+                .write_all(format!(":{server_name} PONG {server_name} :{token}\r\n").as_bytes())
+                .await?;
+            continue;
+        }
+
+        if msg.command_eq("QUIT") {
+            quit_reason = msg.params.first().cloned().filter(|r| !r.is_empty());
+            break;
+        }
+
+        if !registered {
+            writer
+                .write_all(
+                    numeric(
+                        server_name,
+                        451,
+                        nick.as_deref().unwrap_or("*"),
+                        &["You have not registered"],
+                    )
+                    .as_bytes(),
+                )
+                .await?;
+            continue;
+        }
+
+        let nick_s = nick.as_deref().unwrap_or("*");
+        let user_s = user.as_deref().unwrap_or("user");
+        let host = "dsc.local";
+        let prefix = format!("{nick_s}!{user_s}@{host}");
+
+        if msg.command_eq("ADMIN") {
+            writer
+                .write_all(
+                    numeric(
+                        server_name,
+                        256,
+                        nick_s,
+                        &[&format!("Administrative info about {server_name}")],
+                    )
+                    .as_bytes(),
+                )
+                .await?;
+            let admin = if cfg.server.admin_name.is_empty() {
+                "DSC Admin"
+            } else {
+                cfg.server.admin_name.as_str()
+            };
+            let email = if cfg.server.admin_email.is_empty() {
+                "unset@localhost"
+            } else {
+                cfg.server.admin_email.as_str()
+            };
+            writer
+                .write_all(numeric(server_name, 257, nick_s, &[admin]).as_bytes())
+                .await?;
+            writer
+                .write_all(numeric(server_name, 258, nick_s, &["Decision Science Corp"]).as_bytes())
+                .await?;
+            writer
+                .write_all(numeric(server_name, 259, nick_s, &[email]).as_bytes())
+                .await?;
+            continue;
+        }
+
+        if msg.command_eq("OPER") {
+            if !secure && cfg.security.tls_required_for_auth() {
+                writer
+                    .write_all(
+                        numeric(
+                            server_name,
+                            464,
+                            nick_s,
+                            &["TLS required for authentication"],
+                        )
+                        .as_bytes(),
+                    )
+                    .await?;
+                continue;
+            }
+            let (Some(name), Some(pass)) = (msg.params.first(), msg.params.get(1)) else {
+                writer
+                    .write_all(
+                        numeric(server_name, 461, nick_s, &["OPER", "Not enough parameters"])
+                            .as_bytes(),
+                    )
+                    .await?;
+                continue;
+            };
+            let oper = &cfg.oper;
+            if !oper.enabled || oper.name.is_empty() {
+                writer
+                    .write_all(
+                        numeric(server_name, 491, nick_s, &["No O-lines for your host"]).as_bytes(),
+                    )
+                    .await?;
+                continue;
+            }
+            if name == &oper.name && pass == &oper.password {
+                is_oper = true;
+                writer
+                    .write_all(
+                        numeric(server_name, 381, nick_s, &["You are now an IRC operator"])
+                            .as_bytes(),
+                    )
+                    .await?;
+                info!(%nick_s, "client obtained OPER");
+            } else {
+                writer
+                    .write_all(
+                        numeric(server_name, 464, nick_s, &["Password incorrect"]).as_bytes(),
+                    )
+                    .await?;
+            }
+            continue;
+        }
+
+        if msg.command_eq("JOIN") {
+            let Some(chan_list) = msg.params.first() else {
+                continue;
+            };
+            for chan in chan_list.split(',') {
+                let chan = chan.trim();
+                if !valid_channel_name(chan, cfg.server.max_channel_length) {
+                    writer
+                        .write_all(
+                            numeric(server_name, 403, nick_s, &[chan, "No such channel"])
+                                .as_bytes(),
+                        )
+                        .await?;
+                    continue;
+                }
+                // Client-local channel quota (checked before taking the lock for create).
+                if !channels.contains(chan) && channels.len() >= cfg.limits.max_channels_per_client
+                {
+                    writer
+                        .write_all(
+                            numeric(
+                                server_name,
+                                405,
+                                nick_s,
+                                &[chan, "You have joined too many channels"],
+                            )
+                            .as_bytes(),
+                        )
+                        .await?;
+                    continue;
+                }
+                let join_result = {
+                    let mut g = shared.lock().await;
+                    // Ensure display nick is indexed before NAMES (first NICK may race).
+                    if let Some(ref n) = nick {
+                        g.id_to_nick.insert(conn_id, n.clone());
+                        g.nicks.entry(ascii_casefold(n)).or_insert(conn_id);
+                    }
+                    let exists = g.channels.contains_key(chan);
+                    if !exists && g.channels.len() >= cfg.limits.max_channels {
+                        Err(405)
+                    } else if g
+                        .channels
+                        .get(chan)
+                        .map(|c| c.members.contains(&conn_id))
+                        .unwrap_or(false)
+                    {
+                        Ok(None)
+                    } else {
+                        let nick_chk = nick.as_deref().unwrap_or("*");
+                        let user_chk = user.as_deref().unwrap_or("user");
+                        let blocked = if let Some(ch) = g.channels.get(chan) {
+                            if ch.is_banned(nick_chk, user_chk, "dsc.local") {
+                                Some(474)
+                            } else if ch.mode_i && !ch.invites.contains(&conn_id) && !is_oper {
+                                Some(473)
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        };
+                        if let Some(code) = blocked {
+                            Err(code)
+                        } else {
+                            let (topic, members, ops, over) = {
+                                let ch = g.channels.entry(chan.to_string()).or_default();
+                                if ch.members.len() >= cfg.limits.max_members_per_channel {
+                                    (None, Default::default(), Default::default(), true)
+                                } else {
+                                    let first = ch.members.is_empty();
+                                    ch.members.insert(conn_id);
+                                    ch.invites.remove(&conn_id);
+                                    if first {
+                                        ch.ops.insert(conn_id);
+                                    }
+                                    (ch.topic.clone(), ch.members.clone(), ch.ops.clone(), false)
+                                }
+                            };
+                            if over {
+                                Err(471)
+                            } else {
+                                let snap = crate::state::NamesSnapshot::from_sets(
+                                    &members,
+                                    &ops,
+                                    &g.id_to_nick,
+                                );
+                                Ok(Some((snap, topic)))
+                            }
+                        }
+                    }
+                };
+                let (names_snap, topic) = match join_result {
+                    Ok(None) => continue, // already a member
+                    Ok(Some(pair)) => pair,
+                    Err(405) => {
                         writer
                             .write_all(
                                 numeric(
                                     server_name,
-                                    904,
-                                    nick.as_deref().unwrap_or("*"),
-                                    &["TLS required for authentication"],
+                                    405,
+                                    nick_s,
+                                    &[chan, "Too many channels on this server"],
                                 )
                                 .as_bytes(),
                             )
                             .await?;
                         continue;
                     }
-                    handle_authenticate(
-                        &mut writer,
-                        server_name,
-                        &msg,
-                        nick.as_deref(),
-                        user.as_deref(),
-                        &cfg.accounts,
-                        &enabled_caps,
-                        &mut sasl_state,
-                        &mut account,
-                    )
-                    .await?;
-                    continue;
-                }
-
-                if msg.command_eq("NICK") {
-                    let Some(desired_raw) = msg.params.first().cloned() else {
-                        writer.write_all(
-                            numeric(server_name, 431, nick.as_deref().unwrap_or("*"), &["No nickname given"]).as_bytes(),
-                        ).await?;
-                        continue;
-                    };
-                    let Ok(parsed) = Nick::parse(&desired_raw, cfg.server.max_nick_length) else {
-                        writer.write_all(
-                            numeric(server_name, 432, nick.as_deref().unwrap_or("*"), &["Erroneous Nickname"]).as_bytes(),
-                        ).await?;
-                        continue;
-                    };
-                    let desired = parsed.as_str().to_string();
-                    let desired_key = parsed.key().as_str().to_string();
-                    let old_nick = nick.clone();
-                    let nick_taken = {
-                        let mut g = shared.lock().await;
-                        if let Some(other) = g.nicks.get(&desired_key) {
-                            if *other != conn_id {
-                                true
-                            } else {
-                                if let Some(ref old) = old_nick {
-                                    g.nicks.remove(&ascii_casefold(old));
-                                }
-                                g.nicks.insert(desired_key.clone(), conn_id);
-                                g.id_to_nick.insert(conn_id, desired.clone());
-                                false
-                            }
-                        } else {
-                            if let Some(ref old) = old_nick {
-                                g.nicks.remove(&ascii_casefold(old));
-                            }
-                            g.nicks.insert(desired_key, conn_id);
-                            g.id_to_nick.insert(conn_id, desired.clone());
-                            false
-                        }
-                    };
-                    if nick_taken {
-                        writer.write_all(
-                            numeric(server_name, 433, nick.as_deref().unwrap_or("*"), &[desired.as_str(), "Nickname is already in use"]).as_bytes(),
-                        ).await?;
-                        continue;
-                    }
-                    nick = Some(desired.clone());
-                    if let Some(old) = old_nick {
-                        if registered && old != desired {
-                            let user_s = user.as_deref().unwrap_or("user");
-                            let line = format!(":{old}!{user_s}@dsc.local NICK :{desired}\r\n");
-                            writer.write_all(line.as_bytes()).await?;
-                            let g = shared.lock().await;
-                            for chan in &channels {
-                                let _ = g.fanout_channel(chan, &line, conn_id);
-                            }
-                        }
-                    }
-                    try_register(
-                        &mut writer,
-                        server_name,
-                        &cfg.server.motd,
-                        &mut registered,
-                        nick.as_deref(),
-                        user.as_deref(),
-                        realname.as_deref(),
-                        cap_negotiating,
-                        cfg.server.max_nick_length,
-                        cfg.server.max_channel_length,
-                    ).await?;
-                    continue;
-                }
-
-                if msg.command_eq("USER") {
-                    let Some(u) = msg.params.first().cloned() else { continue };
-                    if u.is_empty() || field_has_control(&u) || u.contains(' ') {
-                        writer.write_all(
-                            numeric(server_name, 461, nick.as_deref().unwrap_or("*"), &["USER", "Invalid username"]).as_bytes(),
-                        ).await?;
-                        continue;
-                    }
-                    let rn = msg.params.get(3).cloned().or_else(|| msg.params.last().cloned());
-                    if let Some(ref r) = rn {
-                        if field_has_control(r) {
-                            writer.write_all(
-                                numeric(server_name, 461, nick.as_deref().unwrap_or("*"), &["USER", "Invalid realname"]).as_bytes(),
-                            ).await?;
-                            continue;
-                        }
-                    }
-                    user = Some(u);
-                    realname = rn;
-                    try_register(
-                        &mut writer,
-                        server_name,
-                        &cfg.server.motd,
-                        &mut registered,
-                        nick.as_deref(),
-                        user.as_deref(),
-                        realname.as_deref(),
-                        cap_negotiating,
-                        cfg.server.max_nick_length,
-                        cfg.server.max_channel_length,
-                    ).await?;
-                    continue;
-                }
-
-                if msg.command_eq("PING") {
-                    let token = msg.params.first().map(String::as_str).unwrap_or(server_name);
-                    writer.write_all(format!(":{server_name} PONG {server_name} :{token}\r\n").as_bytes()).await?;
-                    continue;
-                }
-
-                if msg.command_eq("QUIT") {
-                    quit_reason = msg
-                        .params
-                        .first()
-                        .cloned()
-                        .filter(|r| !r.is_empty());
-                    break;
-                }
-
-                if !registered {
-                    writer.write_all(
-                        numeric(server_name, 451, nick.as_deref().unwrap_or("*"), &["You have not registered"]).as_bytes(),
-                    ).await?;
-                    continue;
-                }
-
-                let nick_s = nick.as_deref().unwrap_or("*");
-                let user_s = user.as_deref().unwrap_or("user");
-                let host = "dsc.local";
-                let prefix = format!("{nick_s}!{user_s}@{host}");
-
-                if msg.command_eq("ADMIN") {
-                    writer.write_all(
-                        numeric(server_name, 256, nick_s, &[&format!("Administrative info about {server_name}")]).as_bytes(),
-                    ).await?;
-                    let admin = if cfg.server.admin_name.is_empty() {
-                        "DSC Admin"
-                    } else {
-                        cfg.server.admin_name.as_str()
-                    };
-                    let email = if cfg.server.admin_email.is_empty() {
-                        "unset@localhost"
-                    } else {
-                        cfg.server.admin_email.as_str()
-                    };
-                    writer.write_all(
-                        numeric(server_name, 257, nick_s, &[&format!("{admin}")]).as_bytes(),
-                    ).await?;
-                    writer.write_all(
-                        numeric(server_name, 258, nick_s, &["Decision Science Corp"]).as_bytes(),
-                    ).await?;
-                    writer.write_all(
-                        numeric(server_name, 259, nick_s, &[email]).as_bytes(),
-                    ).await?;
-                    continue;
-                }
-
-                if msg.command_eq("OPER") {
-                    if !secure && cfg.security.tls_required_for_auth() {
-                        writer.write_all(
-                            numeric(server_name, 464, nick_s, &["TLS required for authentication"]).as_bytes(),
-                        ).await?;
-                        continue;
-                    }
-                    let (Some(name), Some(pass)) = (msg.params.first(), msg.params.get(1)) else {
-                        writer.write_all(
-                            numeric(server_name, 461, nick_s, &["OPER", "Not enough parameters"]).as_bytes(),
-                        ).await?;
-                        continue;
-                    };
-                    let oper = &cfg.oper;
-                    if !oper.enabled || oper.name.is_empty() {
-                        writer.write_all(
-                            numeric(server_name, 491, nick_s, &["No O-lines for your host"]).as_bytes(),
-                        ).await?;
-                        continue;
-                    }
-                    if name == &oper.name && pass == &oper.password {
-                        is_oper = true;
-                        writer.write_all(
-                            numeric(server_name, 381, nick_s, &["You are now an IRC operator"]).as_bytes(),
-                        ).await?;
-                        info!(%nick_s, "client obtained OPER");
-                    } else {
-                        writer.write_all(
-                            numeric(server_name, 464, nick_s, &["Password incorrect"]).as_bytes(),
-                        ).await?;
-                    }
-                    continue;
-                }
-
-                if msg.command_eq("JOIN") {
-                    let Some(chan_list) = msg.params.first() else { continue };
-                    for chan in chan_list.split(',') {
-                        let chan = chan.trim();
-                        if !valid_channel_name(chan, cfg.server.max_channel_length) {
-                            writer.write_all(
-                                numeric(server_name, 403, nick_s, &[chan, "No such channel"]).as_bytes(),
-                            ).await?;
-                            continue;
-                        }
-                        // Client-local channel quota (checked before taking the lock for create).
-                        if !channels.contains(chan)
-                            && channels.len() >= cfg.limits.max_channels_per_client
-                        {
-                            writer.write_all(
-                                numeric(server_name, 405, nick_s, &[chan, "You have joined too many channels"]).as_bytes(),
-                            ).await?;
-                            continue;
-                        }
-                        let join_result = {
-                            let mut g = shared.lock().await;
-                            // Ensure display nick is indexed before NAMES (first NICK may race).
-                            if let Some(ref n) = nick {
-                                g.id_to_nick.insert(conn_id, n.clone());
-                                g.nicks.entry(ascii_casefold(n)).or_insert(conn_id);
-                            }
-                            let exists = g.channels.contains_key(chan);
-                            if !exists && g.channels.len() >= cfg.limits.max_channels {
-                                Err(405)
-                            } else if g
-                                .channels
-                                .get(chan)
-                                .map(|c| c.members.contains(&conn_id))
-                                .unwrap_or(false)
-                            {
-                                Ok(None)
-                            } else {
-                                let nick_chk = nick.as_deref().unwrap_or("*");
-                                let user_chk = user.as_deref().unwrap_or("user");
-                                let blocked = if let Some(ch) = g.channels.get(chan) {
-                                    if ch.is_banned(nick_chk, user_chk, "dsc.local") {
-                                        Some(474)
-                                    } else if ch.mode_i
-                                        && !ch.invites.contains(&conn_id)
-                                        && !is_oper
-                                    {
-                                        Some(473)
-                                    } else {
-                                        None
-                                    }
-                                } else {
-                                    None
-                                };
-                                if let Some(code) = blocked {
-                                    Err(code)
-                                } else {
-                                    let (topic, members, ops, over) = {
-                                        let ch = g.channels.entry(chan.to_string()).or_default();
-                                        if ch.members.len() >= cfg.limits.max_members_per_channel {
-                                            (None, Default::default(), Default::default(), true)
-                                        } else {
-                                            let first = ch.members.is_empty();
-                                            ch.members.insert(conn_id);
-                                            ch.invites.remove(&conn_id);
-                                            if first {
-                                                ch.ops.insert(conn_id);
-                                            }
-                                            (
-                                                ch.topic.clone(),
-                                                ch.members.clone(),
-                                                ch.ops.clone(),
-                                                false,
-                                            )
-                                        }
-                                    };
-                                    if over {
-                                        Err(471)
-                                    } else {
-                                        let snap = crate::state::NamesSnapshot::from_sets(
-                                            &members,
-                                            &ops,
-                                            &g.id_to_nick,
-                                        );
-                                        Ok(Some((snap, topic)))
-                                    }
-                                }
-                            }
-                        };
-                        let (names_snap, topic) = match join_result {
-                            Ok(None) => continue, // already a member
-                            Ok(Some(pair)) => pair,
-                            Err(405) => {
-                                writer.write_all(
-                                    numeric(server_name, 405, nick_s, &[chan, "Too many channels on this server"]).as_bytes(),
-                                ).await?;
-                                continue;
-                            }
-                            Err(471) => {
-                                writer.write_all(
-                                    numeric(server_name, 471, nick_s, &[chan, "Cannot join channel (+l)"]).as_bytes(),
-                                ).await?;
-                                continue;
-                            }
-                            Err(473) => {
-                                writer.write_all(
-                                    numeric(server_name, 473, nick_s, &[chan, "Cannot join channel (+i)"]).as_bytes(),
-                                ).await?;
-                                continue;
-                            }
-                            Err(474) => {
-                                writer.write_all(
-                                    numeric(server_name, 474, nick_s, &[chan, "Cannot join channel (+b)"]).as_bytes(),
-                                ).await?;
-                                continue;
-                            }
-                            Err(_) => continue,
-                        };
-                        channels.insert(chan.to_string());
-                        let join_line = format!(":{prefix} JOIN :{chan}\r\n");
-                        writer.write_all(join_line.as_bytes()).await?;
-                        let _ = shared.lock().await.fanout_channel(chan, &join_line, conn_id);
-                        match &topic {
-                            Some(t) => {
-                                writer.write_all(
-                                    numeric(server_name, 332, nick_s, &[chan, t.as_str()]).as_bytes(),
-                                ).await?;
-                            }
-                            None => {
-                                writer.write_all(
-                                    numeric(server_name, 331, nick_s, &[chan, "No topic is set"]).as_bytes(),
-                                ).await?;
-                            }
-                        }
-                        // Split 353 payloads to wire size (ties C2 / max_line_bytes).
-                        let overhead = server_name.len()
-                            + nick_s.len()
-                            + chan.len()
-                            + 24; // " 353  =  :\r\n" plus margins
-                        let max_payload = cfg.limits.max_line_bytes.saturating_sub(overhead).max(16);
-                        for chunk in names_snap.split_for_wire(max_payload) {
-                            writer.write_all(
-                                numeric(server_name, 353, nick_s, &["=", chan, chunk.as_str()]).as_bytes(),
-                            ).await?;
-                        }
-                        writer.write_all(
-                            numeric(server_name, 366, nick_s, &[chan, "End of /NAMES list"]).as_bytes(),
-                        ).await?;
-                        // Auto-replay recent channel history (Ergo-style convenience).
-                        let (hist, limit) = {
-                            let g = shared.lock().await;
-                            (
-                                g.history.clone(),
-                                g.config.history.auto_replay_on_join,
-                            )
-                        };
-                        if let (Some(store), lim) = (hist, limit) {
-                            if lim > 0 {
-                                if let Ok(rows) = store.latest_async(chan.to_string(), lim).await {
-                                    for h in rows {
-                                        let line = adapt_bus_line(&h.tagged_privmsg(), &enabled_caps);
-                                        writer.write_all(line.as_bytes()).await?;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    continue;
-                }
-
-                if msg.command_eq("CHATHISTORY") {
-                    let sub = msg.params.first().map(String::as_str).unwrap_or("");
-                    if !sub.eq_ignore_ascii_case("LATEST") {
-                        writer.write_all(
-                            numeric(
-                                server_name,
-                                400,
-                                nick_s,
-                                &["CHATHISTORY", "Only LATEST is implemented"],
-                            )
-                            .as_bytes(),
-                        )
-                        .await?;
-                        continue;
-                    }
-                    let target = msg.params.get(1).map(String::as_str).unwrap_or("");
-                    let limit = msg
-                        .params
-                        .get(3)
-                        .and_then(|s| s.parse::<usize>().ok())
-                        .unwrap_or(50)
-                        .clamp(1, 200);
-                    if !target.starts_with('#') || !channels.contains(target) {
-                        writer.write_all(
-                            numeric(
-                                server_name,
-                                442,
-                                nick_s,
-                                &[target, "You're not on that channel"],
-                            )
-                            .as_bytes(),
-                        )
-                        .await?;
-                        continue;
-                    }
-                    let store = { shared.lock().await.history.clone() };
-                    let Some(store) = store else {
-                        writer.write_all(
-                            numeric(
-                                server_name,
-                                400,
-                                nick_s,
-                                &["CHATHISTORY", "History is disabled"],
-                            )
-                            .as_bytes(),
-                        )
-                        .await?;
-                        continue;
-                    };
-                    let rows = store
-                        .latest_async(target.to_string(), limit)
-                        .await
-                        .unwrap_or_default();
-                    // BATCH / chathistory CAP not advertised until Protocol P2 (#2227).
-                    let use_batch = has_cap(&enabled_caps, "batch");
-                    if use_batch {
+                    Err(471) => {
                         writer
                             .write_all(
-                                format!(":{} BATCH +chathist draft/chathistory
-", server_name)
+                                numeric(
+                                    server_name,
+                                    471,
+                                    nick_s,
+                                    &[chan, "Cannot join channel (+l)"],
+                                )
+                                .as_bytes(),
+                            )
+                            .await?;
+                        continue;
+                    }
+                    Err(473) => {
+                        writer
+                            .write_all(
+                                numeric(
+                                    server_name,
+                                    473,
+                                    nick_s,
+                                    &[chan, "Cannot join channel (+i)"],
+                                )
+                                .as_bytes(),
+                            )
+                            .await?;
+                        continue;
+                    }
+                    Err(474) => {
+                        writer
+                            .write_all(
+                                numeric(
+                                    server_name,
+                                    474,
+                                    nick_s,
+                                    &[chan, "Cannot join channel (+b)"],
+                                )
+                                .as_bytes(),
+                            )
+                            .await?;
+                        continue;
+                    }
+                    Err(_) => continue,
+                };
+                channels.insert(chan.to_string());
+                let join_line = format!(":{prefix} JOIN :{chan}\r\n");
+                writer.write_all(join_line.as_bytes()).await?;
+                let _ = shared
+                    .lock()
+                    .await
+                    .fanout_channel(chan, &join_line, conn_id);
+                match &topic {
+                    Some(t) => {
+                        writer
+                            .write_all(
+                                numeric(server_name, 332, nick_s, &[chan, t.as_str()]).as_bytes(),
+                            )
+                            .await?;
+                    }
+                    None => {
+                        writer
+                            .write_all(
+                                numeric(server_name, 331, nick_s, &[chan, "No topic is set"])
                                     .as_bytes(),
                             )
                             .await?;
                     }
-                    for h in rows {
-                        let mut line = adapt_bus_line(&h.tagged_privmsg(), &enabled_caps);
-                        if use_batch {
-                            line = prepend_tag(&line, "batch", "chathist");
+                }
+                // Split 353 payloads to wire size (ties C2 / max_line_bytes).
+                let overhead = server_name.len() + nick_s.len() + chan.len() + 24; // " 353  =  :\r\n" plus margins
+                let max_payload = cfg.limits.max_line_bytes.saturating_sub(overhead).max(16);
+                for chunk in names_snap.split_for_wire(max_payload) {
+                    writer
+                        .write_all(
+                            numeric(server_name, 353, nick_s, &["=", chan, chunk.as_str()])
+                                .as_bytes(),
+                        )
+                        .await?;
+                }
+                writer
+                    .write_all(
+                        numeric(server_name, 366, nick_s, &[chan, "End of /NAMES list"]).as_bytes(),
+                    )
+                    .await?;
+                // Auto-replay recent channel history (Ergo-style convenience).
+                let (hist, limit) = {
+                    let g = shared.lock().await;
+                    (g.history.clone(), g.config.history.auto_replay_on_join)
+                };
+                if let (Some(store), lim) = (hist, limit) {
+                    if lim > 0 {
+                        if let Ok(rows) = store.latest_async(chan.to_string(), lim).await {
+                            for h in rows {
+                                let line = adapt_bus_line(&h.tagged_privmsg(), &enabled_caps);
+                                writer.write_all(line.as_bytes()).await?;
+                            }
                         }
-                        writer.write_all(line.as_bytes()).await?;
                     }
-                    if use_batch {
+                }
+            }
+            continue;
+        }
+
+        if msg.command_eq("CHATHISTORY") {
+            let sub = msg.params.first().map(String::as_str).unwrap_or("");
+            if !sub.eq_ignore_ascii_case("LATEST") {
+                writer
+                    .write_all(
+                        numeric(
+                            server_name,
+                            400,
+                            nick_s,
+                            &["CHATHISTORY", "Only LATEST is implemented"],
+                        )
+                        .as_bytes(),
+                    )
+                    .await?;
+                continue;
+            }
+            let target = msg.params.get(1).map(String::as_str).unwrap_or("");
+            let limit = msg
+                .params
+                .get(3)
+                .and_then(|s| s.parse::<usize>().ok())
+                .unwrap_or(50)
+                .clamp(1, 200);
+            if !target.starts_with('#') || !channels.contains(target) {
+                writer
+                    .write_all(
+                        numeric(
+                            server_name,
+                            442,
+                            nick_s,
+                            &[target, "You're not on that channel"],
+                        )
+                        .as_bytes(),
+                    )
+                    .await?;
+                continue;
+            }
+            let store = { shared.lock().await.history.clone() };
+            let Some(store) = store else {
+                writer
+                    .write_all(
+                        numeric(
+                            server_name,
+                            400,
+                            nick_s,
+                            &["CHATHISTORY", "History is disabled"],
+                        )
+                        .as_bytes(),
+                    )
+                    .await?;
+                continue;
+            };
+            let rows = store
+                .latest_async(target.to_string(), limit)
+                .await
+                .unwrap_or_default();
+            // BATCH / chathistory CAP not advertised until Protocol P2 (#2227).
+            let use_batch = has_cap(&enabled_caps, "batch");
+            if use_batch {
+                writer
+                    .write_all(
+                        format!(
+                            ":{} BATCH +chathist draft/chathistory
+",
+                            server_name
+                        )
+                        .as_bytes(),
+                    )
+                    .await?;
+            }
+            for h in rows {
+                let mut line = adapt_bus_line(&h.tagged_privmsg(), &enabled_caps);
+                if use_batch {
+                    line = prepend_tag(&line, "batch", "chathist");
+                }
+                writer.write_all(line.as_bytes()).await?;
+            }
+            if use_batch {
+                writer
+                    .write_all(
+                        format!(
+                            ":{} BATCH -chathist
+",
+                            server_name
+                        )
+                        .as_bytes(),
+                    )
+                    .await?;
+            }
+            continue;
+        }
+
+        if msg.command_eq("PRIVMSG") {
+            let (Some(target), Some(text)) = (msg.params.first(), msg.params.get(1)) else {
+                writer
+                    .write_all(
+                        numeric(
+                            server_name,
+                            461,
+                            nick_s,
+                            &["PRIVMSG", "Not enough parameters"],
+                        )
+                        .as_bytes(),
+                    )
+                    .await?;
+                continue;
+            };
+            if target.starts_with('#') {
+                let (allowed, hist) = {
+                    let g = shared.lock().await;
+                    let allowed = match g.channels.get(target.as_str()) {
+                        Some(ch) if ch.members.contains(&conn_id) => true,
+                        Some(ch) if !ch.mode_n => true,
+                        Some(_) => false,
+                        None => false,
+                    };
+                    (allowed, g.history.clone())
+                };
+                if !allowed {
+                    writer
+                        .write_all(
+                            numeric(
+                                server_name,
+                                404,
+                                nick_s,
+                                &[target.as_str(), "Cannot send to channel"],
+                            )
+                            .as_bytes(),
+                        )
+                        .await?;
+                    continue;
+                }
+                let mut line = if let Some(store) = hist {
+                    match store
+                        .append_async(target.clone(), prefix.clone(), text.clone())
+                        .await
+                    {
+                        Ok(h) => h.tagged_privmsg(),
+                        Err(_) => format!(
+                            ":{prefix} PRIVMSG {target} :{text}
+"
+                        ),
+                    }
+                } else {
+                    format!(
+                        ":{prefix} PRIVMSG {target} :{text}
+"
+                    )
+                };
+                if let Some(acc) = account.as_deref() {
+                    line = prepend_tag(&line, "account", acc);
+                }
+                let _ = shared
+                    .lock()
+                    .await
+                    .fanout_channel(target.as_str(), &line, conn_id);
+            } else {
+                let tid = {
+                    let g = shared.lock().await;
+                    g.nicks.get(&ascii_casefold(target)).copied()
+                };
+                let Some(tid) = tid else {
+                    writer
+                        .write_all(
+                            numeric(
+                                server_name,
+                                401,
+                                nick_s,
+                                &[target.as_str(), "No such nick/channel"],
+                            )
+                            .as_bytes(),
+                        )
+                        .await?;
+                    continue;
+                };
+                let mut line = format!(
+                    ":{prefix} PRIVMSG {target} :{text}
+"
+                );
+                if let Some(acc) = account.as_deref() {
+                    line = prepend_tag(&line, "account", acc);
+                }
+                let _ = shared.lock().await.fanout_ids(&[tid], &line);
+            }
+            continue;
+        }
+
+        if msg.command_eq("PART") {
+            let Some(chan) = msg.params.first() else {
+                continue;
+            };
+            if !channels.contains(chan) {
+                writer
+                    .write_all(
+                        numeric(
+                            server_name,
+                            442,
+                            nick_s,
+                            &[chan.as_str(), "You're not on that channel"],
+                        )
+                        .as_bytes(),
+                    )
+                    .await?;
+                continue;
+            }
+            let is_member = {
+                let g = shared.lock().await;
+                g.channels
+                    .get(chan.as_str())
+                    .map(|c| c.members.contains(&conn_id))
+                    .unwrap_or(false)
+            };
+            if !is_member {
+                channels.remove(chan);
+                writer
+                    .write_all(
+                        numeric(
+                            server_name,
+                            442,
+                            nick_s,
+                            &[chan.as_str(), "You're not on that channel"],
+                        )
+                        .as_bytes(),
+                    )
+                    .await?;
+                continue;
+            }
+            channels.remove(chan);
+            let part_reason = msg.params.get(1).map(String::as_str).unwrap_or("");
+            let line = if part_reason.is_empty() {
+                format!(":{prefix} PART {chan}\r\n")
+            } else {
+                format!(":{prefix} PART {chan} :{part_reason}\r\n")
+            };
+            writer.write_all(line.as_bytes()).await?;
+            {
+                let mut g = shared.lock().await;
+                let _ = g.fanout_channel(chan.as_str(), &line, conn_id);
+                if let Some(ch) = g.channels.get_mut(chan) {
+                    ch.remove_member(conn_id);
+                    if ch.members.is_empty() {
+                        g.channels.remove(chan);
+                    }
+                }
+            }
+            continue;
+        }
+
+        if msg.command_eq("TOPIC") {
+            let Some(chan) = msg.params.first() else {
+                continue;
+            };
+            if !channels.contains(chan) {
+                writer
+                    .write_all(
+                        numeric(
+                            server_name,
+                            442,
+                            nick_s,
+                            &[chan.as_str(), "You're not on that channel"],
+                        )
+                        .as_bytes(),
+                    )
+                    .await?;
+                continue;
+            }
+            if msg.params.len() == 1 {
+                let topic = {
+                    let g = shared.lock().await;
+                    g.channels.get(chan.as_str()).and_then(|c| c.topic.clone())
+                };
+                match topic {
+                    Some(t) => {
                         writer
                             .write_all(
-                                format!(":{} BATCH -chathist
-", server_name).as_bytes(),
+                                numeric(server_name, 332, nick_s, &[chan.as_str(), t.as_str()])
+                                    .as_bytes(),
                             )
                             .await?;
                     }
-                    continue;
-                }
-
-                if msg.command_eq("PRIVMSG") {
-                    let (Some(target), Some(text)) = (msg.params.first(), msg.params.get(1)) else {
-                        writer.write_all(
-                            numeric(server_name, 461, nick_s, &["PRIVMSG", "Not enough parameters"]).as_bytes(),
-                        ).await?;
-                        continue;
-                    };
-                    if target.starts_with('#') {
-                        let (allowed, hist) = {
-                            let g = shared.lock().await;
-                            let allowed = match g.channels.get(target.as_str()) {
-                                Some(ch) if ch.members.contains(&conn_id) => true,
-                                Some(ch) if !ch.mode_n => true,
-                                Some(_) => false,
-                                None => false,
-                            };
-                            (allowed, g.history.clone())
-                        };
-                        if !allowed {
-                            writer.write_all(
-                                numeric(server_name, 404, nick_s, &[target.as_str(), "Cannot send to channel"]).as_bytes(),
-                            ).await?;
-                            continue;
-                        }
-                        let mut line = if let Some(store) = hist {
-                            match store
-                                .append_async(target.clone(), prefix.clone(), text.clone())
-                                .await
-                            {
-                                Ok(h) => h.tagged_privmsg(),
-                                Err(_) => format!(":{prefix} PRIVMSG {target} :{text}
-"),
-                            }
-                        } else {
-                            format!(":{prefix} PRIVMSG {target} :{text}
-")
-                        };
-                        if let Some(acc) = account.as_deref() {
-                            line = prepend_tag(&line, "account", acc);
-                        }
-                        let _ = shared.lock().await.fanout_channel(target.as_str(), &line, conn_id);
-                    } else {
-                        let tid = {
-                            let g = shared.lock().await;
-                            g.nicks.get(&ascii_casefold(target)).copied()
-                        };
-                        let Some(tid) = tid else {
-                            writer.write_all(
-                                numeric(server_name, 401, nick_s, &[target.as_str(), "No such nick/channel"]).as_bytes(),
-                            ).await?;
-                            continue;
-                        };
-                        let mut line = format!(":{prefix} PRIVMSG {target} :{text}
-");
-                        if let Some(acc) = account.as_deref() {
-                            line = prepend_tag(&line, "account", acc);
-                        }
-                        let _ = shared.lock().await.fanout_ids(&[tid], &line);
-                    }
-                    continue;
-                }
-
-                if msg.command_eq("PART") {
-                    let Some(chan) = msg.params.first() else { continue };
-                    if !channels.contains(chan) {
-                        writer.write_all(
-                            numeric(server_name, 442, nick_s, &[chan.as_str(), "You're not on that channel"]).as_bytes(),
-                        ).await?;
-                        continue;
-                    }
-                    let is_member = {
-                        let g = shared.lock().await;
-                        g.channels.get(chan.as_str()).map(|c| c.members.contains(&conn_id)).unwrap_or(false)
-                    };
-                    if !is_member {
-                        channels.remove(chan);
-                        writer.write_all(
-                            numeric(server_name, 442, nick_s, &[chan.as_str(), "You're not on that channel"]).as_bytes(),
-                        ).await?;
-                        continue;
-                    }
-                    channels.remove(chan);
-                    let part_reason = msg.params.get(1).map(String::as_str).unwrap_or("");
-                    let line = if part_reason.is_empty() {
-                        format!(":{prefix} PART {chan}\r\n")
-                    } else {
-                        format!(":{prefix} PART {chan} :{part_reason}\r\n")
-                    };
-                    writer.write_all(line.as_bytes()).await?;
-                    {
-                        let mut g = shared.lock().await;
-                        let _ = g.fanout_channel(chan.as_str(), &line, conn_id);
-                        if let Some(ch) = g.channels.get_mut(chan) {
-                            ch.remove_member(conn_id);
-                            if ch.members.is_empty() {
-                                g.channels.remove(chan);
-                            }
-                        }
-                    }
-                    continue;
-                }
-
-                if msg.command_eq("TOPIC") {
-                    let Some(chan) = msg.params.first() else { continue };
-                    if !channels.contains(chan) {
-                        writer.write_all(
-                            numeric(server_name, 442, nick_s, &[chan.as_str(), "You're not on that channel"]).as_bytes(),
-                        ).await?;
-                        continue;
-                    }
-                    if msg.params.len() == 1 {
-                        let topic = {
-                            let g = shared.lock().await;
-                            g.channels.get(chan.as_str()).and_then(|c| c.topic.clone())
-                        };
-                        match topic {
-                            Some(t) => {
-                                writer.write_all(
-                                    numeric(server_name, 332, nick_s, &[chan.as_str(), t.as_str()]).as_bytes(),
-                                ).await?;
-                            }
-                            None => {
-                                writer.write_all(
-                                    numeric(server_name, 331, nick_s, &[chan.as_str(), "No topic is set"]).as_bytes(),
-                                ).await?;
-                            }
-                        }
-                        continue;
-                    }
-                    let new_topic = msg.params.get(1).cloned().unwrap_or_default();
-                    if field_has_control(&new_topic) {
-                        writer.write_all(
-                            numeric(server_name, 461, nick_s, &["TOPIC", "Invalid topic"]).as_bytes(),
-                        ).await?;
-                        continue;
-                    }
-                    if new_topic.len() > cfg.limits.max_topic_bytes {
-                        writer.write_all(
-                            numeric(server_name, 461, nick_s, &["TOPIC", "Topic too long"]).as_bytes(),
-                        ).await?;
-                        continue;
-                    }
-                    let allowed = {
-                        let g = shared.lock().await;
-                        match g.channels.get(chan.as_str()) {
-                            Some(ch) if is_oper || ch.is_op(conn_id) => true,
-                            Some(ch) if !ch.mode_t => true,
-                            _ => false,
-                        }
-                    };
-                    if !allowed {
-                        writer.write_all(
-                            numeric(server_name, 482, nick_s, &[chan.as_str(), "You're not channel operator"]).as_bytes(),
-                        ).await?;
-                        continue;
-                    }
-                    {
-                        let mut g = shared.lock().await;
-                        if let Some(ch) = g.channels.get_mut(chan.as_str()) {
-                            if new_topic.is_empty() {
-                                ch.topic = None;
-                            } else {
-                                ch.topic = Some(new_topic.clone());
-                            }
-                        }
-                    }
-                    let line = format!(":{prefix} TOPIC {chan} :{new_topic}\r\n");
-                    writer.write_all(line.as_bytes()).await?;
-                    let _ = shared.lock().await.fanout_channel(chan.as_str(), &line, conn_id);
-                    continue;
-                }
-
-                if msg.command_eq("KICK") {
-                    let (Some(chan), Some(target_nick)) = (msg.params.first(), msg.params.get(1)) else {
-                        writer.write_all(
-                            numeric(server_name, 461, nick_s, &["KICK", "Not enough parameters"]).as_bytes(),
-                        ).await?;
-                        continue;
-                    };
-                    let reason = msg.params.get(2).map(String::as_str).unwrap_or(nick_s);
-                    let (allowed, target_id) = {
-                        let g = shared.lock().await;
-                        let target_id = g.nicks.get(&ascii_casefold(target_nick.as_str())).copied();
-                        match (g.channels.get(chan.as_str()), target_id) {
-                            (Some(ch), Some(tid)) if ch.members.contains(&tid) => {
-                                (is_oper || ch.is_op(conn_id), Some(tid))
-                            }
-                            _ => (false, target_id),
-                        }
-                    };
-                    if !allowed {
-                        let on_chan = {
-                            let g = shared.lock().await;
-                            target_id
-                                .and_then(|tid| g.channels.get(chan.as_str()).map(|c| c.members.contains(&tid)))
-                                .unwrap_or(false)
-                        };
-                        if !on_chan {
-                            writer.write_all(
-                                numeric(server_name, 441, nick_s, &[target_nick.as_str(), chan.as_str(), "They aren't on that channel"]).as_bytes(),
-                            ).await?;
-                        } else {
-                            writer.write_all(
-                                numeric(server_name, 482, nick_s, &[chan.as_str(), "You're not channel operator"]).as_bytes(),
-                            ).await?;
-                        }
-                        continue;
-                    }
-                    let line = format!(":{prefix} KICK {chan} {target_nick} :{reason}\r\n");
-                    // Fanout to current members (incl. victim) before remove — H-07.
-                    {
-                        let mut g = shared.lock().await;
-                        if let Some(tid) = target_id {
-                            let mut ids: Vec<u64> = g
-                                .channels
-                                .get(chan.as_str())
-                                .map(|c| {
-                                    c.members
-                                        .iter()
-                                        .copied()
-                                        .filter(|id| *id != conn_id)
-                                        .collect()
-                                })
-                                .unwrap_or_default();
-                            if !ids.contains(&tid) {
-                                ids.push(tid);
-                            }
-                            let _ = g.fanout_ids(&ids, &line);
-                            if let Some(ch) = g.channels.get_mut(chan.as_str()) {
-                                ch.remove_member(tid);
-                                if ch.members.is_empty() {
-                                    g.channels.remove(chan.as_str());
-                                }
-                            }
-                        }
-                    }
-                    // Deliver to kicker too (standard).
-                    writer.write_all(line.as_bytes()).await?;
-                    continue;
-                }
-
-                if msg.command_eq("MODE") {
-                    let Some(target) = msg.params.first() else { continue };
-                    if !target.starts_with('#') {
-                        // user modes: ignore for v0 except oper might set +o later
-                        continue;
-                    }
-                    if msg.params.len() == 1 {
-                        let modes = {
-                            let g = shared.lock().await;
-                            g.channels
-                                .get(target.as_str())
-                                .map(|c| c.mode_chars())
-                                .unwrap_or_else(|| "+nt".into())
-                        };
-                        writer.write_all(
-                            numeric(server_name, 324, nick_s, &[target.as_str(), modes.as_str()]).as_bytes(),
-                        ).await?;
-                        continue;
-                    }
-                    let mode_str = msg.params.get(1).map(String::as_str).unwrap_or("");
-                    let mode_arg = msg.params.get(2).cloned();
-                    let privileged = {
-                        let g = shared.lock().await;
-                        match g.channels.get(target.as_str()) {
-                            Some(ch) => is_oper || ch.is_op(conn_id),
-                            None => false,
-                        }
-                    };
-                    if !privileged {
-                        writer.write_all(
-                            numeric(server_name, 482, nick_s, &[target.as_str(), "You're not channel operator"]).as_bytes(),
-                        ).await?;
-                        continue;
-                    }
-
-                    let mut adding = true;
-                    let mut applied = String::new();
-                    let mut applied_args: Vec<String> = Vec::new();
-                    for ch in mode_str.chars() {
-                        match ch {
-                            '+' => adding = true,
-                            '-' => adding = false,
-                            'o' => {
-                                let Some(who) = mode_arg.clone() else { continue };
-                                let mut g = shared.lock().await;
-                                let Some(tid) = g.nicks.get(&ascii_casefold(&who)).copied() else {
-                                    drop(g);
-                                    writer.write_all(
-                                        numeric(server_name, 441, nick_s, &[who.as_str(), target.as_str(), "They aren't on that channel"]).as_bytes(),
-                                    ).await?;
-                                    continue;
-                                };
-                                let Some(chan) = g.channels.get_mut(target.as_str()) else { continue };
-                                if !chan.members.contains(&tid) {
-                                    drop(g);
-                                    writer.write_all(
-                                        numeric(server_name, 441, nick_s, &[who.as_str(), target.as_str(), "They aren't on that channel"]).as_bytes(),
-                                    ).await?;
-                                    continue;
-                                }
-                                if adding {
-                                    chan.ops.insert(tid);
-                                } else {
-                                    chan.ops.remove(&tid);
-                                }
-                                applied.push(if adding { '+' } else { '-' });
-                                applied.push('o');
-                                applied_args.push(who);
-                            }
-                            't' => {
-                                let mut g = shared.lock().await;
-                                if let Some(chan) = g.channels.get_mut(target.as_str()) {
-                                    chan.mode_t = adding;
-                                    applied.push(if adding { '+' } else { '-' });
-                                    applied.push('t');
-                                }
-                            }
-                            'n' => {
-                                let mut g = shared.lock().await;
-                                if let Some(chan) = g.channels.get_mut(target.as_str()) {
-                                    chan.mode_n = adding;
-                                    applied.push(if adding { '+' } else { '-' });
-                                    applied.push('n');
-                                }
-                            }
-                            'i' => {
-                                let mut g = shared.lock().await;
-                                if let Some(chan) = g.channels.get_mut(target.as_str()) {
-                                    chan.mode_i = adding;
-                                    applied.push(if adding { '+' } else { '-' });
-                                    applied.push('i');
-                                }
-                            }
-                            'b' => {
-                                let Some(mask) = mode_arg.clone() else {
-                                    // List bans
-                                    let bans = {
-                                        let g = shared.lock().await;
-                                        g.channels
-                                            .get(target.as_str())
-                                            .map(|c| c.bans.iter().cloned().collect::<Vec<_>>())
-                                            .unwrap_or_default()
-                                    };
-                                    for b in bans {
-                                        writer.write_all(
-                                            numeric(server_name, 367, nick_s, &[target.as_str(), b.as_str()]).as_bytes(),
-                                        ).await?;
-                                    }
-                                    writer.write_all(
-                                        numeric(server_name, 368, nick_s, &[target.as_str(), "End of Channel Ban List"]).as_bytes(),
-                                    ).await?;
-                                    continue;
-                                };
-                                let mut g = shared.lock().await;
-                                if let Some(chan) = g.channels.get_mut(target.as_str()) {
-                                    if adding {
-                                        chan.bans.insert(mask.clone());
-                                    } else {
-                                        chan.bans.remove(&mask);
-                                    }
-                                    applied.push(if adding { '+' } else { '-' });
-                                    applied.push('b');
-                                    applied_args.push(mask);
-                                }
-                            }
-                            _ => {
-                                writer.write_all(
-                                    numeric(server_name, 472, nick_s, &[&ch.to_string(), "is unknown mode char to me"]).as_bytes(),
-                                ).await?;
-                            }
-                        }
-                    }
-                    if !applied.is_empty() {
-                        let args = if applied_args.is_empty() {
-                            String::new()
-                        } else {
-                            format!(" {}", applied_args.join(" "))
-                        };
-                        let line = format!(":{prefix} MODE {target} {applied}{args}\r\n");
-                        writer.write_all(line.as_bytes()).await?;
-                        let _ = shared.lock().await.fanout_channel(target.as_str(), &line, conn_id);
-                    }
-                    continue;
-                }
-
-
-                if msg.command_eq("INVITE") {
-                    let (Some(who), Some(chan)) = (msg.params.first(), msg.params.get(1)) else {
-                        writer.write_all(
-                            numeric(server_name, 461, nick_s, &["INVITE", "Not enough parameters"]).as_bytes(),
-                        ).await?;
-                        continue;
-                    };
-                    let (allowed, tid) = {
-                        let g = shared.lock().await;
-                        let tid = g.nicks.get(&ascii_casefold(who)).copied();
-                        let allowed = match g.channels.get(chan.as_str()) {
-                            Some(ch) if ch.members.contains(&conn_id) => {
-                                is_oper || ch.is_op(conn_id) || !ch.mode_i
-                            }
-                            Some(_) => false,
-                            None => false,
-                        };
-                        (allowed, tid)
-                    };
-                    if !allowed {
-                        writer.write_all(
-                            numeric(server_name, 482, nick_s, &[chan.as_str(), "You're not channel operator"]).as_bytes(),
-                        ).await?;
-                        continue;
-                    }
-                    let Some(tid) = tid else {
-                        writer.write_all(
-                            numeric(server_name, 401, nick_s, &[who.as_str(), "No such nick/channel"]).as_bytes(),
-                        ).await?;
-                        continue;
-                    };
-                    {
-                        let mut g = shared.lock().await;
-                        if let Some(ch) = g.channels.get_mut(chan.as_str()) {
-                            ch.invites.insert(tid);
-                        }
-                    }
-                    writer.write_all(
-                        numeric(server_name, 341, nick_s, &[who.as_str(), chan.as_str()]).as_bytes(),
-                    ).await?;
-                    let line = format!(":{prefix} INVITE {who} :{chan}\r\n");
-                    let _ = shared.lock().await.fanout_ids(&[tid], &line);
-                    continue;
-                }
-
-                if msg.command_eq("NOTICE") {
-                    let (Some(target), Some(text)) = (msg.params.first(), msg.params.get(1)) else {
-                        continue; // NOTICE: no error replies
-                    };
-                    if target.starts_with('#') {
-                        let allowed = {
-                            let g = shared.lock().await;
-                            match g.channels.get(target.as_str()) {
-                                Some(ch) if ch.members.contains(&conn_id) => true,
-                                Some(ch) if !ch.mode_n => true,
-                                _ => false,
-                            }
-                        };
-                        if allowed {
-                            let line = format!(":{prefix} NOTICE {target} :{text}\r\n");
-                            let _ = shared.lock().await.fanout_channel(target.as_str(), &line, conn_id);
-                        }
-                    } else {
-                        let tid = {
-                            let g = shared.lock().await;
-                            g.nicks.get(&ascii_casefold(target)).copied()
-                        };
-                        if let Some(tid) = tid {
-                            let line = format!(":{prefix} NOTICE {target} :{text}\r\n");
-                            let _ = shared.lock().await.fanout_ids(&[tid], &line);
-                        }
-                    }
-                    continue;
-                }
-
-                if msg.command_eq("NAMES") {
-                    let chan_list = msg.params.first().cloned().unwrap_or_default();
-                    let targets: Vec<String> = if chan_list.is_empty() {
-                        let g = shared.lock().await;
-                        g.channels.keys().cloned().collect()
-                    } else {
-                        chan_list
-                            .split(',')
-                            .map(|s| s.trim().to_string())
-                            .filter(|s| !s.is_empty())
-                            .collect()
-                    };
-                    for chan in targets {
-                        let snap = {
-                            let g = shared.lock().await;
-                            g.channels.get(chan.as_str()).map(|ch| {
-                                crate::state::NamesSnapshot::from_sets(
-                                    &ch.members,
-                                    &ch.ops,
-                                    &g.id_to_nick,
+                    None => {
+                        writer
+                            .write_all(
+                                numeric(
+                                    server_name,
+                                    331,
+                                    nick_s,
+                                    &[chan.as_str(), "No topic is set"],
                                 )
-                            })
+                                .as_bytes(),
+                            )
+                            .await?;
+                    }
+                }
+                continue;
+            }
+            let new_topic = msg.params.get(1).cloned().unwrap_or_default();
+            if field_has_control(&new_topic) {
+                writer
+                    .write_all(
+                        numeric(server_name, 461, nick_s, &["TOPIC", "Invalid topic"]).as_bytes(),
+                    )
+                    .await?;
+                continue;
+            }
+            if new_topic.len() > cfg.limits.max_topic_bytes {
+                writer
+                    .write_all(
+                        numeric(server_name, 461, nick_s, &["TOPIC", "Topic too long"]).as_bytes(),
+                    )
+                    .await?;
+                continue;
+            }
+            let allowed = {
+                let g = shared.lock().await;
+                match g.channels.get(chan.as_str()) {
+                    Some(ch) if is_oper || ch.is_op(conn_id) => true,
+                    Some(ch) if !ch.mode_t => true,
+                    _ => false,
+                }
+            };
+            if !allowed {
+                writer
+                    .write_all(
+                        numeric(
+                            server_name,
+                            482,
+                            nick_s,
+                            &[chan.as_str(), "You're not channel operator"],
+                        )
+                        .as_bytes(),
+                    )
+                    .await?;
+                continue;
+            }
+            {
+                let mut g = shared.lock().await;
+                if let Some(ch) = g.channels.get_mut(chan.as_str()) {
+                    if new_topic.is_empty() {
+                        ch.topic = None;
+                    } else {
+                        ch.topic = Some(new_topic.clone());
+                    }
+                }
+            }
+            let line = format!(":{prefix} TOPIC {chan} :{new_topic}\r\n");
+            writer.write_all(line.as_bytes()).await?;
+            let _ = shared
+                .lock()
+                .await
+                .fanout_channel(chan.as_str(), &line, conn_id);
+            continue;
+        }
+
+        if msg.command_eq("KICK") {
+            let (Some(chan), Some(target_nick)) = (msg.params.first(), msg.params.get(1)) else {
+                writer
+                    .write_all(
+                        numeric(server_name, 461, nick_s, &["KICK", "Not enough parameters"])
+                            .as_bytes(),
+                    )
+                    .await?;
+                continue;
+            };
+            let reason = msg.params.get(2).map(String::as_str).unwrap_or(nick_s);
+            let (allowed, target_id) = {
+                let g = shared.lock().await;
+                let target_id = g.nicks.get(&ascii_casefold(target_nick.as_str())).copied();
+                match (g.channels.get(chan.as_str()), target_id) {
+                    (Some(ch), Some(tid)) if ch.members.contains(&tid) => {
+                        (is_oper || ch.is_op(conn_id), Some(tid))
+                    }
+                    _ => (false, target_id),
+                }
+            };
+            if !allowed {
+                let on_chan = {
+                    let g = shared.lock().await;
+                    target_id
+                        .and_then(|tid| {
+                            g.channels
+                                .get(chan.as_str())
+                                .map(|c| c.members.contains(&tid))
+                        })
+                        .unwrap_or(false)
+                };
+                if !on_chan {
+                    writer
+                        .write_all(
+                            numeric(
+                                server_name,
+                                441,
+                                nick_s,
+                                &[
+                                    target_nick.as_str(),
+                                    chan.as_str(),
+                                    "They aren't on that channel",
+                                ],
+                            )
+                            .as_bytes(),
+                        )
+                        .await?;
+                } else {
+                    writer
+                        .write_all(
+                            numeric(
+                                server_name,
+                                482,
+                                nick_s,
+                                &[chan.as_str(), "You're not channel operator"],
+                            )
+                            .as_bytes(),
+                        )
+                        .await?;
+                }
+                continue;
+            }
+            let line = format!(":{prefix} KICK {chan} {target_nick} :{reason}\r\n");
+            // Fanout to current members (incl. victim) before remove — H-07.
+            {
+                let mut g = shared.lock().await;
+                if let Some(tid) = target_id {
+                    let mut ids: Vec<u64> = g
+                        .channels
+                        .get(chan.as_str())
+                        .map(|c| {
+                            c.members
+                                .iter()
+                                .copied()
+                                .filter(|id| *id != conn_id)
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    if !ids.contains(&tid) {
+                        ids.push(tid);
+                    }
+                    let _ = g.fanout_ids(&ids, &line);
+                    if let Some(ch) = g.channels.get_mut(chan.as_str()) {
+                        ch.remove_member(tid);
+                        if ch.members.is_empty() {
+                            g.channels.remove(chan.as_str());
+                        }
+                    }
+                }
+            }
+            // Deliver to kicker too (standard).
+            writer.write_all(line.as_bytes()).await?;
+            continue;
+        }
+
+        if msg.command_eq("MODE") {
+            let Some(target) = msg.params.first() else {
+                continue;
+            };
+            if !target.starts_with('#') {
+                // user modes: ignore for v0 except oper might set +o later
+                continue;
+            }
+            if msg.params.len() == 1 {
+                let modes = {
+                    let g = shared.lock().await;
+                    g.channels
+                        .get(target.as_str())
+                        .map(|c| c.mode_chars())
+                        .unwrap_or_else(|| "+nt".into())
+                };
+                writer
+                    .write_all(
+                        numeric(server_name, 324, nick_s, &[target.as_str(), modes.as_str()])
+                            .as_bytes(),
+                    )
+                    .await?;
+                continue;
+            }
+            let mode_str = msg.params.get(1).map(String::as_str).unwrap_or("");
+            let mode_arg = msg.params.get(2).cloned();
+            let privileged = {
+                let g = shared.lock().await;
+                match g.channels.get(target.as_str()) {
+                    Some(ch) => is_oper || ch.is_op(conn_id),
+                    None => false,
+                }
+            };
+            if !privileged {
+                writer
+                    .write_all(
+                        numeric(
+                            server_name,
+                            482,
+                            nick_s,
+                            &[target.as_str(), "You're not channel operator"],
+                        )
+                        .as_bytes(),
+                    )
+                    .await?;
+                continue;
+            }
+
+            let mut adding = true;
+            let mut applied = String::new();
+            let mut applied_args: Vec<String> = Vec::new();
+            for ch in mode_str.chars() {
+                match ch {
+                    '+' => adding = true,
+                    '-' => adding = false,
+                    'o' => {
+                        let Some(who) = mode_arg.clone() else {
+                            continue;
                         };
-                        if let Some(snap) = snap {
-                            let overhead = server_name.len() + nick_s.len() + chan.len() + 24;
-                            let max_payload =
-                                cfg.limits.max_line_bytes.saturating_sub(overhead).max(16);
-                            for chunk in snap.split_for_wire(max_payload) {
+                        let mut g = shared.lock().await;
+                        let Some(tid) = g.nicks.get(&ascii_casefold(&who)).copied() else {
+                            drop(g);
+                            writer
+                                .write_all(
+                                    numeric(
+                                        server_name,
+                                        441,
+                                        nick_s,
+                                        &[
+                                            who.as_str(),
+                                            target.as_str(),
+                                            "They aren't on that channel",
+                                        ],
+                                    )
+                                    .as_bytes(),
+                                )
+                                .await?;
+                            continue;
+                        };
+                        let Some(chan) = g.channels.get_mut(target.as_str()) else {
+                            continue;
+                        };
+                        if !chan.members.contains(&tid) {
+                            drop(g);
+                            writer
+                                .write_all(
+                                    numeric(
+                                        server_name,
+                                        441,
+                                        nick_s,
+                                        &[
+                                            who.as_str(),
+                                            target.as_str(),
+                                            "They aren't on that channel",
+                                        ],
+                                    )
+                                    .as_bytes(),
+                                )
+                                .await?;
+                            continue;
+                        }
+                        if adding {
+                            chan.ops.insert(tid);
+                        } else {
+                            chan.ops.remove(&tid);
+                        }
+                        applied.push(if adding { '+' } else { '-' });
+                        applied.push('o');
+                        applied_args.push(who);
+                    }
+                    't' => {
+                        let mut g = shared.lock().await;
+                        if let Some(chan) = g.channels.get_mut(target.as_str()) {
+                            chan.mode_t = adding;
+                            applied.push(if adding { '+' } else { '-' });
+                            applied.push('t');
+                        }
+                    }
+                    'n' => {
+                        let mut g = shared.lock().await;
+                        if let Some(chan) = g.channels.get_mut(target.as_str()) {
+                            chan.mode_n = adding;
+                            applied.push(if adding { '+' } else { '-' });
+                            applied.push('n');
+                        }
+                    }
+                    'i' => {
+                        let mut g = shared.lock().await;
+                        if let Some(chan) = g.channels.get_mut(target.as_str()) {
+                            chan.mode_i = adding;
+                            applied.push(if adding { '+' } else { '-' });
+                            applied.push('i');
+                        }
+                    }
+                    'b' => {
+                        let Some(mask) = mode_arg.clone() else {
+                            // List bans
+                            let bans = {
+                                let g = shared.lock().await;
+                                g.channels
+                                    .get(target.as_str())
+                                    .map(|c| c.bans.iter().cloned().collect::<Vec<_>>())
+                                    .unwrap_or_default()
+                            };
+                            for b in bans {
                                 writer
                                     .write_all(
                                         numeric(
                                             server_name,
-                                            353,
+                                            367,
                                             nick_s,
-                                            &["=", chan.as_str(), chunk.as_str()],
+                                            &[target.as_str(), b.as_str()],
                                         )
                                         .as_bytes(),
                                     )
                                     .await?;
                             }
-                        }
-                        writer
-                            .write_all(
-                                numeric(
-                                    server_name,
-                                    366,
-                                    nick_s,
-                                    &[chan.as_str(), "End of /NAMES list"],
-                                )
-                                .as_bytes(),
-                            )
-                            .await?;
-                    }
-                    if chan_list.is_empty() {
-                        // RFC: end with 366 * when listing all — already emitted per channel.
-                    }
-                    continue;
-                }
-
-                if msg.command_eq("LIST") {
-                    writer
-                        .write_all(
-                            numeric(server_name, 321, nick_s, &["Channel", "Users Name"]).as_bytes(),
-                        )
-                        .await?;
-                    let rows = {
-                        let g = shared.lock().await;
-                        let filter = msg.params.first().cloned();
-                        let mut v: Vec<(String, usize, String)> = g
-                            .channels
-                            .iter()
-                            .filter(|(name, _)| {
-                                filter
-                                    .as_ref()
-                                    .map(|f| f.split(',').any(|c| c.trim() == name.as_str()))
-                                    .unwrap_or(true)
-                            })
-                            .map(|(name, ch)| {
-                                (
-                                    name.clone(),
-                                    ch.members.len(),
-                                    ch.topic.clone().unwrap_or_default(),
-                                )
-                            })
-                            .collect();
-                        v.sort_by(|a, b| a.0.cmp(&b.0));
-                        v
-                    };
-                    for (name, n, topic) in rows {
-                        let n_s = n.to_string();
-                        writer
-                            .write_all(
-                                numeric(
-                                    server_name,
-                                    322,
-                                    nick_s,
-                                    &[name.as_str(), n_s.as_str(), topic.as_str()],
-                                )
-                                .as_bytes(),
-                            )
-                            .await?;
-                    }
-                    writer
-                        .write_all(
-                            numeric(server_name, 323, nick_s, &["End of /LIST"]).as_bytes(),
-                        )
-                        .await?;
-                    continue;
-                }
-
-                if msg.command_eq("WHO") {
-                    let mask = msg.params.first().map(String::as_str).unwrap_or("0");
-                    let rows = {
-                        let g = shared.lock().await;
-                        let mut out = Vec::new();
-                        if mask.starts_with('#') {
-                            if let Some(ch) = g.channels.get(mask) {
-                                for id in &ch.members {
-                                    if let Some(n) = g.id_to_nick.get(id) {
-                                        let flags = if ch.ops.contains(id) { "H@" } else { "H" };
-                                        out.push((
-                                            mask.to_string(),
-                                            n.clone(),
-                                            flags.to_string(),
-                                        ));
-                                    }
-                                }
-                            }
-                        } else {
-                            for (key, id) in &g.nicks {
-                                if mask == "0"
-                                    || mask == "*"
-                                    || key.eq_ignore_ascii_case(mask)
-                                {
-                                    let display = g
-                                        .id_to_nick
-                                        .get(id)
-                                        .cloned()
-                                        .unwrap_or_else(|| key.clone());
-                                    out.push(("*".into(), display, "H".into()));
-                                }
-                            }
-                        }
-                        out
-                    };
-                    for (chan, n, flags) in rows {
-                        // 352: <channel> <user> <host> <server> <nick> <H|G>[*][@|+] :<hopcount> <real>
-                        writer
-                            .write_all(
-                                numeric(
-                                    server_name,
-                                    352,
-                                    nick_s,
-                                    &[
-                                        chan.as_str(),
-                                        "user",
-                                        "dsc.local",
+                            writer
+                                .write_all(
+                                    numeric(
                                         server_name,
-                                        n.as_str(),
-                                        flags.as_str(),
-                                        "0 realname",
-                                    ],
+                                        368,
+                                        nick_s,
+                                        &[target.as_str(), "End of Channel Ban List"],
+                                    )
+                                    .as_bytes(),
+                                )
+                                .await?;
+                            continue;
+                        };
+                        let mut g = shared.lock().await;
+                        if let Some(chan) = g.channels.get_mut(target.as_str()) {
+                            if adding {
+                                chan.bans.insert(mask.clone());
+                            } else {
+                                chan.bans.remove(&mask);
+                            }
+                            applied.push(if adding { '+' } else { '-' });
+                            applied.push('b');
+                            applied_args.push(mask);
+                        }
+                    }
+                    _ => {
+                        writer
+                            .write_all(
+                                numeric(
+                                    server_name,
+                                    472,
+                                    nick_s,
+                                    &[&ch.to_string(), "is unknown mode char to me"],
                                 )
                                 .as_bytes(),
                             )
                             .await?;
                     }
-                    writer
-                        .write_all(
-                            numeric(server_name, 315, nick_s, &[mask, "End of /WHO list"]).as_bytes(),
-                        )
-                        .await?;
-                    continue;
                 }
+            }
+            if !applied.is_empty() {
+                let args = if applied_args.is_empty() {
+                    String::new()
+                } else {
+                    format!(" {}", applied_args.join(" "))
+                };
+                let line = format!(":{prefix} MODE {target} {applied}{args}\r\n");
+                writer.write_all(line.as_bytes()).await?;
+                let _ = shared
+                    .lock()
+                    .await
+                    .fanout_channel(target.as_str(), &line, conn_id);
+            }
+            continue;
+        }
 
-                if msg.command_eq("WHOIS") {
-                    let Some(target) = msg.params.first() else {
+        if msg.command_eq("INVITE") {
+            let (Some(who), Some(chan)) = (msg.params.first(), msg.params.get(1)) else {
+                writer
+                    .write_all(
+                        numeric(
+                            server_name,
+                            461,
+                            nick_s,
+                            &["INVITE", "Not enough parameters"],
+                        )
+                        .as_bytes(),
+                    )
+                    .await?;
+                continue;
+            };
+            let (allowed, tid) = {
+                let g = shared.lock().await;
+                let tid = g.nicks.get(&ascii_casefold(who)).copied();
+                let allowed = match g.channels.get(chan.as_str()) {
+                    Some(ch) if ch.members.contains(&conn_id) => {
+                        is_oper || ch.is_op(conn_id) || !ch.mode_i
+                    }
+                    Some(_) => false,
+                    None => false,
+                };
+                (allowed, tid)
+            };
+            if !allowed {
+                writer
+                    .write_all(
+                        numeric(
+                            server_name,
+                            482,
+                            nick_s,
+                            &[chan.as_str(), "You're not channel operator"],
+                        )
+                        .as_bytes(),
+                    )
+                    .await?;
+                continue;
+            }
+            let Some(tid) = tid else {
+                writer
+                    .write_all(
+                        numeric(
+                            server_name,
+                            401,
+                            nick_s,
+                            &[who.as_str(), "No such nick/channel"],
+                        )
+                        .as_bytes(),
+                    )
+                    .await?;
+                continue;
+            };
+            {
+                let mut g = shared.lock().await;
+                if let Some(ch) = g.channels.get_mut(chan.as_str()) {
+                    ch.invites.insert(tid);
+                }
+            }
+            writer
+                .write_all(
+                    numeric(server_name, 341, nick_s, &[who.as_str(), chan.as_str()]).as_bytes(),
+                )
+                .await?;
+            let line = format!(":{prefix} INVITE {who} :{chan}\r\n");
+            let _ = shared.lock().await.fanout_ids(&[tid], &line);
+            continue;
+        }
+
+        if msg.command_eq("NOTICE") {
+            let (Some(target), Some(text)) = (msg.params.first(), msg.params.get(1)) else {
+                continue; // NOTICE: no error replies
+            };
+            if target.starts_with('#') {
+                let allowed = {
+                    let g = shared.lock().await;
+                    match g.channels.get(target.as_str()) {
+                        Some(ch) if ch.members.contains(&conn_id) => true,
+                        Some(ch) if !ch.mode_n => true,
+                        _ => false,
+                    }
+                };
+                if allowed {
+                    let line = format!(":{prefix} NOTICE {target} :{text}\r\n");
+                    let _ = shared
+                        .lock()
+                        .await
+                        .fanout_channel(target.as_str(), &line, conn_id);
+                }
+            } else {
+                let tid = {
+                    let g = shared.lock().await;
+                    g.nicks.get(&ascii_casefold(target)).copied()
+                };
+                if let Some(tid) = tid {
+                    let line = format!(":{prefix} NOTICE {target} :{text}\r\n");
+                    let _ = shared.lock().await.fanout_ids(&[tid], &line);
+                }
+            }
+            continue;
+        }
+
+        if msg.command_eq("NAMES") {
+            let chan_list = msg.params.first().cloned().unwrap_or_default();
+            let targets: Vec<String> = if chan_list.is_empty() {
+                let g = shared.lock().await;
+                g.channels.keys().cloned().collect()
+            } else {
+                chan_list
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect()
+            };
+            for chan in targets {
+                let snap = {
+                    let g = shared.lock().await;
+                    g.channels.get(chan.as_str()).map(|ch| {
+                        crate::state::NamesSnapshot::from_sets(&ch.members, &ch.ops, &g.id_to_nick)
+                    })
+                };
+                if let Some(snap) = snap {
+                    let overhead = server_name.len() + nick_s.len() + chan.len() + 24;
+                    let max_payload = cfg.limits.max_line_bytes.saturating_sub(overhead).max(16);
+                    for chunk in snap.split_for_wire(max_payload) {
                         writer
                             .write_all(
                                 numeric(
                                     server_name,
-                                    461,
+                                    353,
                                     nick_s,
-                                    &["WHOIS", "Not enough parameters"],
+                                    &["=", chan.as_str(), chunk.as_str()],
                                 )
                                 .as_bytes(),
                             )
                             .await?;
-                        continue;
-                    };
-                    let info = {
-                        let g = shared.lock().await;
-                        let tid = g.nicks.get(&ascii_casefold(target)).copied();
-                        tid.map(|id| {
-                            let nick = g.id_to_nick.get(&id).cloned().unwrap_or_else(|| target.clone());
-                            let chans: Vec<String> = g
-                                .channels
-                                .iter()
-                                .filter(|(_, ch)| ch.members.contains(&id))
-                                .map(|(name, ch)| {
-                                    if ch.ops.contains(&id) {
-                                        format!("@{name}")
-                                    } else {
-                                        name.clone()
-                                    }
-                                })
-                                .collect();
-                            (nick, chans)
+                    }
+                }
+                writer
+                    .write_all(
+                        numeric(
+                            server_name,
+                            366,
+                            nick_s,
+                            &[chan.as_str(), "End of /NAMES list"],
+                        )
+                        .as_bytes(),
+                    )
+                    .await?;
+            }
+            if chan_list.is_empty() {
+                // RFC: end with 366 * when listing all — already emitted per channel.
+            }
+            continue;
+        }
+
+        if msg.command_eq("LIST") {
+            writer
+                .write_all(numeric(server_name, 321, nick_s, &["Channel", "Users Name"]).as_bytes())
+                .await?;
+            let rows = {
+                let g = shared.lock().await;
+                let filter = msg.params.first().cloned();
+                let mut v: Vec<(String, usize, String)> = g
+                    .channels
+                    .iter()
+                    .filter(|(name, _)| {
+                        filter
+                            .as_ref()
+                            .map(|f| f.split(',').any(|c| c.trim() == name.as_str()))
+                            .unwrap_or(true)
+                    })
+                    .map(|(name, ch)| {
+                        (
+                            name.clone(),
+                            ch.members.len(),
+                            ch.topic.clone().unwrap_or_default(),
+                        )
+                    })
+                    .collect();
+                v.sort_by(|a, b| a.0.cmp(&b.0));
+                v
+            };
+            for (name, n, topic) in rows {
+                let n_s = n.to_string();
+                writer
+                    .write_all(
+                        numeric(
+                            server_name,
+                            322,
+                            nick_s,
+                            &[name.as_str(), n_s.as_str(), topic.as_str()],
+                        )
+                        .as_bytes(),
+                    )
+                    .await?;
+            }
+            writer
+                .write_all(numeric(server_name, 323, nick_s, &["End of /LIST"]).as_bytes())
+                .await?;
+            continue;
+        }
+
+        if msg.command_eq("WHO") {
+            let mask = msg.params.first().map(String::as_str).unwrap_or("0");
+            let rows = {
+                let g = shared.lock().await;
+                let mut out = Vec::new();
+                if mask.starts_with('#') {
+                    if let Some(ch) = g.channels.get(mask) {
+                        for id in &ch.members {
+                            if let Some(n) = g.id_to_nick.get(id) {
+                                let flags = if ch.ops.contains(id) { "H@" } else { "H" };
+                                out.push((mask.to_string(), n.clone(), flags.to_string()));
+                            }
+                        }
+                    }
+                } else {
+                    for (key, id) in &g.nicks {
+                        if mask == "0" || mask == "*" || key.eq_ignore_ascii_case(mask) {
+                            let display =
+                                g.id_to_nick.get(id).cloned().unwrap_or_else(|| key.clone());
+                            out.push(("*".into(), display, "H".into()));
+                        }
+                    }
+                }
+                out
+            };
+            for (chan, n, flags) in rows {
+                // 352: <channel> <user> <host> <server> <nick> <H|G>[*][@|+] :<hopcount> <real>
+                writer
+                    .write_all(
+                        numeric(
+                            server_name,
+                            352,
+                            nick_s,
+                            &[
+                                chan.as_str(),
+                                "user",
+                                "dsc.local",
+                                server_name,
+                                n.as_str(),
+                                flags.as_str(),
+                                "0 realname",
+                            ],
+                        )
+                        .as_bytes(),
+                    )
+                    .await?;
+            }
+            writer
+                .write_all(
+                    numeric(server_name, 315, nick_s, &[mask, "End of /WHO list"]).as_bytes(),
+                )
+                .await?;
+            continue;
+        }
+
+        if msg.command_eq("WHOIS") {
+            let Some(target) = msg.params.first() else {
+                writer
+                    .write_all(
+                        numeric(
+                            server_name,
+                            461,
+                            nick_s,
+                            &["WHOIS", "Not enough parameters"],
+                        )
+                        .as_bytes(),
+                    )
+                    .await?;
+                continue;
+            };
+            let info = {
+                let g = shared.lock().await;
+                let tid = g.nicks.get(&ascii_casefold(target)).copied();
+                tid.map(|id| {
+                    let nick = g
+                        .id_to_nick
+                        .get(&id)
+                        .cloned()
+                        .unwrap_or_else(|| target.clone());
+                    let chans: Vec<String> = g
+                        .channels
+                        .iter()
+                        .filter(|(_, ch)| ch.members.contains(&id))
+                        .map(|(name, ch)| {
+                            if ch.ops.contains(&id) {
+                                format!("@{name}")
+                            } else {
+                                name.clone()
+                            }
                         })
-                    };
-                    let Some((who_nick, chans)) = info else {
-                        writer
-                            .write_all(
-                                numeric(
-                                    server_name,
-                                    401,
-                                    nick_s,
-                                    &[target.as_str(), "No such nick/channel"],
-                                )
-                                .as_bytes(),
-                            )
-                            .await?;
-                        continue;
-                    };
-                    writer
-                        .write_all(
-                            numeric(
-                                server_name,
-                                311,
-                                nick_s,
-                                &[
-                                    who_nick.as_str(),
-                                    "user",
-                                    "dsc.local",
-                                    "*",
-                                    "realname",
-                                ],
-                            )
-                            .as_bytes(),
+                        .collect();
+                    (nick, chans)
+                })
+            };
+            let Some((who_nick, chans)) = info else {
+                writer
+                    .write_all(
+                        numeric(
+                            server_name,
+                            401,
+                            nick_s,
+                            &[target.as_str(), "No such nick/channel"],
                         )
-                        .await?;
-                    writer
-                        .write_all(
-                            numeric(
-                                server_name,
-                                312,
-                                nick_s,
-                                &[who_nick.as_str(), server_name, "DSC ircd"],
-                            )
-                            .as_bytes(),
-                        )
-                        .await?;
-                    if !chans.is_empty() {
-                        let list = chans.join(" ");
-                        writer
-                            .write_all(
-                                numeric(
-                                    server_name,
-                                    319,
-                                    nick_s,
-                                    &[who_nick.as_str(), list.as_str()],
-                                )
-                                .as_bytes(),
-                            )
-                            .await?;
-                    }
-                    writer
-                        .write_all(
-                            numeric(
-                                server_name,
-                                318,
-                                nick_s,
-                                &[who_nick.as_str(), "End of /WHOIS list"],
-                            )
-                            .as_bytes(),
-                        )
-                        .await?;
-                    continue;
-                }
-
-                if msg.command_eq("MOTD") {
-                    let motd_start = format!("- {server_name} Message of the day -");
-                    writer
-                        .write_all(
-                            numeric(server_name, 375, nick_s, &[motd_start.as_str()]).as_bytes(),
-                        )
-                        .await?;
-                    for line in cfg.server.motd.lines() {
-                        let body = format!("- {line}");
-                        writer
-                            .write_all(
-                                numeric(server_name, 372, nick_s, &[body.as_str()]).as_bytes(),
-                            )
-                            .await?;
-                    }
-                    writer
-                        .write_all(
-                            numeric(server_name, 376, nick_s, &["End of /MOTD command"]).as_bytes(),
-                        )
-                        .await?;
-                    continue;
-                }
-
-                if msg.command_eq("VERSION") {
-                    writer
-                        .write_all(
-                            numeric(
-                                server_name,
-                                351,
-                                nick_s,
-                                &[
-                                    &format!("dsc-ircd-{VERSION}"),
-                                    server_name,
-                                    "Mark x Cody IRC",
-                                ],
-                            )
-                            .as_bytes(),
-                        )
-                        .await?;
-                    continue;
-                }
-
-                if msg.command_eq("LUSERS") {
-                    let (clients, channels_n) = {
-                        let g = shared.lock().await;
-                        (g.client_count, g.channels.len())
-                    };
-                    let c_s = clients.to_string();
-                    let ch_s = channels_n.to_string();
-                    writer
-                        .write_all(
-                            numeric(
-                                server_name,
-                                251,
-                                nick_s,
-                                &[&format!(
-                                    "There are {clients} users and 0 invisible on 1 servers"
-                                )],
-                            )
-                            .as_bytes(),
-                        )
-                        .await?;
-                    writer
-                        .write_all(
-                            numeric(server_name, 252, nick_s, &["0", "operator(s) online"]).as_bytes(),
-                        )
-                        .await?;
-                    writer
-                        .write_all(
-                            numeric(
-                                server_name,
-                                254,
-                                nick_s,
-                                &[ch_s.as_str(), "channels formed"],
-                            )
-                            .as_bytes(),
-                        )
-                        .await?;
-                    writer
-                        .write_all(
-                            numeric(
-                                server_name,
-                                255,
-                                nick_s,
-                                &[&format!("I have {c_s} clients and 1 servers")],
-                            )
-                            .as_bytes(),
-                        )
-                        .await?;
-                    continue;
-                }
-
-                writer.write_all(
+                        .as_bytes(),
+                    )
+                    .await?;
+                continue;
+            };
+            writer
+                .write_all(
                     numeric(
                         server_name,
-                        421,
+                        311,
                         nick_s,
-                        &[msg.command.as_str(), "Unknown command"],
+                        &[who_nick.as_str(), "user", "dsc.local", "*", "realname"],
                     )
                     .as_bytes(),
                 )
                 .await?;
-                continue;
+            writer
+                .write_all(
+                    numeric(
+                        server_name,
+                        312,
+                        nick_s,
+                        &[who_nick.as_str(), server_name, "DSC ircd"],
+                    )
+                    .as_bytes(),
+                )
+                .await?;
+            if !chans.is_empty() {
+                let list = chans.join(" ");
+                writer
+                    .write_all(
+                        numeric(
+                            server_name,
+                            319,
+                            nick_s,
+                            &[who_nick.as_str(), list.as_str()],
+                        )
+                        .as_bytes(),
+                    )
+                    .await?;
+            }
+            writer
+                .write_all(
+                    numeric(
+                        server_name,
+                        318,
+                        nick_s,
+                        &[who_nick.as_str(), "End of /WHOIS list"],
+                    )
+                    .as_bytes(),
+                )
+                .await?;
+            continue;
+        }
+
+        if msg.command_eq("MOTD") {
+            let motd_start = format!("- {server_name} Message of the day -");
+            writer
+                .write_all(numeric(server_name, 375, nick_s, &[motd_start.as_str()]).as_bytes())
+                .await?;
+            for line in cfg.server.motd.lines() {
+                let body = format!("- {line}");
+                writer
+                    .write_all(numeric(server_name, 372, nick_s, &[body.as_str()]).as_bytes())
+                    .await?;
+            }
+            writer
+                .write_all(numeric(server_name, 376, nick_s, &["End of /MOTD command"]).as_bytes())
+                .await?;
+            continue;
+        }
+
+        if msg.command_eq("VERSION") {
+            writer
+                .write_all(
+                    numeric(
+                        server_name,
+                        351,
+                        nick_s,
+                        &[
+                            &format!("dsc-ircd-{VERSION}"),
+                            server_name,
+                            "Mark x Cody IRC",
+                        ],
+                    )
+                    .as_bytes(),
+                )
+                .await?;
+            continue;
+        }
+
+        if msg.command_eq("LUSERS") {
+            let (clients, channels_n) = {
+                let g = shared.lock().await;
+                (g.client_count, g.channels.len())
+            };
+            let c_s = clients.to_string();
+            let ch_s = channels_n.to_string();
+            writer
+                .write_all(
+                    numeric(
+                        server_name,
+                        251,
+                        nick_s,
+                        &[&format!(
+                            "There are {clients} users and 0 invisible on 1 servers"
+                        )],
+                    )
+                    .as_bytes(),
+                )
+                .await?;
+            writer
+                .write_all(
+                    numeric(server_name, 252, nick_s, &["0", "operator(s) online"]).as_bytes(),
+                )
+                .await?;
+            writer
+                .write_all(
+                    numeric(
+                        server_name,
+                        254,
+                        nick_s,
+                        &[ch_s.as_str(), "channels formed"],
+                    )
+                    .as_bytes(),
+                )
+                .await?;
+            writer
+                .write_all(
+                    numeric(
+                        server_name,
+                        255,
+                        nick_s,
+                        &[&format!("I have {c_s} clients and 1 servers")],
+                    )
+                    .as_bytes(),
+                )
+                .await?;
+            continue;
+        }
+
+        writer
+            .write_all(
+                numeric(
+                    server_name,
+                    421,
+                    nick_s,
+                    &[msg.command.as_str(), "Unknown command"],
+                )
+                .as_bytes(),
+            )
+            .await?;
+        continue;
     }
 
     if let Some(n) = nick {
@@ -1649,7 +1980,11 @@ where
             if let Some(ch) = g.channels.get_mut(chan) {
                 ch.remove_member(conn_id);
             }
-            if g.channels.get(chan).map(|c| c.members.is_empty()).unwrap_or(false) {
+            if g.channels
+                .get(chan)
+                .map(|c| c.members.is_empty())
+                .unwrap_or(false)
+            {
                 g.channels.remove(chan);
             }
         }
@@ -1752,15 +2087,7 @@ where
         return Ok(());
     }
     writer
-        .write_all(
-            numeric(
-                server_name,
-                410,
-                nick_s,
-                &[sub, "Invalid CAP subcommand"],
-            )
-            .as_bytes(),
-        )
+        .write_all(numeric(server_name, 410, nick_s, &[sub, "Invalid CAP subcommand"]).as_bytes())
         .await?;
     Ok(())
 }
@@ -1785,13 +2112,7 @@ where
     if !has_cap(enabled_caps, "sasl") {
         writer
             .write_all(
-                numeric(
-                    server_name,
-                    904,
-                    nick_s,
-                    &["SASL authentication failed"],
-                )
-                .as_bytes(),
+                numeric(server_name, 904, nick_s, &["SASL authentication failed"]).as_bytes(),
             )
             .await?;
         return Ok(());
@@ -1801,9 +2122,7 @@ where
         SaslState::Idle => {
             if param.eq_ignore_ascii_case("PLAIN") {
                 *sasl_state = SaslState::AwaitPlain;
-                writer
-                    .write_all(b"AUTHENTICATE +\r\n")
-                    .await?;
+                writer.write_all(b"AUTHENTICATE +\r\n").await?;
             } else if param == "*" {
                 *sasl_state = SaslState::Idle;
                 writer
@@ -1881,15 +2200,24 @@ where
                         server_name,
                         900,
                         nick_s,
-                        &[full.as_str(), acc.name.as_str(), &format!("You are now logged in as {}", acc.name)],
+                        &[
+                            full.as_str(),
+                            acc.name.as_str(),
+                            &format!("You are now logged in as {}", acc.name),
+                        ],
                     )
                     .as_bytes(),
                 )
                 .await?;
             writer
                 .write_all(
-                    numeric(server_name, 903, nick_s, &["SASL authentication successful"])
-                        .as_bytes(),
+                    numeric(
+                        server_name,
+                        903,
+                        nick_s,
+                        &["SASL authentication successful"],
+                    )
+                    .as_bytes(),
                 )
                 .await?;
             info!(account = %acc.name, nick = %nick_s, "SASL PLAIN success");
@@ -1998,10 +2326,7 @@ mod tests {
 
     #[test]
     fn cap_name_matches_ignores_value_suffix() {
-        assert!(cap_name_matches(
-            "sasl",
-            "sasl=PLAIN,EXTERNAL"
-        ));
+        assert!(cap_name_matches("sasl", "sasl=PLAIN,EXTERNAL"));
         assert!(cap_name_matches("SASL=PLAIN", "sasl"));
         assert!(!cap_name_matches("message-tags", "server-time"));
     }
@@ -2011,11 +2336,7 @@ mod tests {
         let advertised = advertised_caps(true, false);
         let mut enabled = HashSet::new();
         // Mixed unknown → atomic NAK, no enable
-        let (ack, nak) = apply_cap_req(
-            "sasl bogon",
-            &advertised,
-            &mut enabled,
-        );
+        let (ack, nak) = apply_cap_req("sasl bogon", &advertised, &mut enabled);
         assert!(ack.is_empty());
         assert_eq!(nak.len(), 2);
         assert!(enabled.is_empty());

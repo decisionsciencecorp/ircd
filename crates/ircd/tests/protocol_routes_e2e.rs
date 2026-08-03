@@ -7,7 +7,9 @@ use tokio::io::AsyncWriteExt;
 async fn nick_errors_and_collision() {
     let shared = shared_plain();
     with_two_clients(shared, |(mut w1, mut r1), (mut w2, mut r2)| async move {
-        w1.write_all(b"NICK alice\r\nUSER a 0 * :A\r\n").await.unwrap();
+        w1.write_all(b"NICK alice\r\nUSER a 0 * :A\r\n")
+            .await
+            .unwrap();
         let _ = read_until(&mut r1, |l| l.iter().any(|x| x.contains("001"))).await;
         w2.write_all(b"NICK !!!\r\n").await.unwrap();
         let bad = read_until(&mut r2, |l| l.iter().any(|x| x.contains("432"))).await;
@@ -91,9 +93,11 @@ async fn topic_non_op_and_privmsg_rules() {
 async fn sasl_fail_and_oper_fail() {
     let shared = shared_plain();
     with_client(shared, 8, |mut w, mut r| async move {
-        w.write_all(b"CAP LS\r\nNICK eve\r\nUSER e 0 * :E\r\nCAP REQ :sasl\r\nAUTHENTICATE PLAIN\r\n")
-            .await
-            .unwrap();
+        w.write_all(
+            b"CAP LS\r\nNICK eve\r\nUSER e 0 * :E\r\nCAP REQ :sasl\r\nAUTHENTICATE PLAIN\r\n",
+        )
+        .await
+        .unwrap();
         let _ = read_until(&mut r, |l| l.iter().any(|x| x == "AUTHENTICATE +")).await;
         w.write_all(b"AUTHENTICATE AGFsaWNlAHdyb25n\r\nCAP END\r\nOPER admin bad\r\nQUIT :x\r\n")
             .await
@@ -133,7 +137,10 @@ async fn truthful_cap_ls_omits_unimplemented() {
     let shared = shared_plain();
     with_client(shared, 2, |mut w, mut r| async move {
         w.write_all(b"CAP LS\r\nQUIT :x\r\n").await.unwrap();
-        let lines = read_until(&mut r, |l| l.iter().any(|x| x.contains("CAP") && x.contains("LS"))).await;
+        let lines = read_until(&mut r, |l| {
+            l.iter().any(|x| x.contains("CAP") && x.contains("LS"))
+        })
+        .await;
         let ls = lines
             .iter()
             .find(|x| x.contains("LS"))
@@ -144,7 +151,13 @@ async fn truthful_cap_ls_omits_unimplemented() {
                 "CAP LS must not advertise {bad}: {ls}"
             );
         }
-        for good in ["message-tags", "server-time", "account-tag", "batch", "cap-notify"] {
+        for good in [
+            "message-tags",
+            "server-time",
+            "account-tag",
+            "batch",
+            "cap-notify",
+        ] {
             assert!(
                 ls.to_ascii_lowercase().contains(good),
                 "CAP LS must advertise {good}: {ls}"
@@ -159,27 +172,52 @@ async fn nick_change_does_not_transfer_ops_to_stolen_nick() {
     let shared = shared_plain();
     with_two_clients(shared, |(mut w1, mut r1), (mut w2, mut r2)| async move {
         // Client1 becomes channel op as OpOld
-        w1.write_all(b"NICK OpOld\r\nUSER o 0 * :O\r\nJOIN #priv\r\n").await.unwrap();
+        w1.write_all(b"NICK OpOld\r\nUSER o 0 * :O\r\nJOIN #priv\r\n")
+            .await
+            .unwrap();
         let _ = read_until(&mut r1, |l| l.iter().any(|x| x.contains("JOIN"))).await;
         // Rename — ops must stay on Client1's id
         w1.write_all(b"NICK OpNew\r\n").await.unwrap();
         let _ = read_until(&mut r1, |l| l.iter().any(|x| x.contains("NICK"))).await;
         // Client2 steals OpOld
-        w2.write_all(b"NICK OpOld\r\nUSER s 0 * :S\r\n").await.unwrap();
-        let _ = read_until(&mut r2, |l| l.iter().any(|x| x.contains("001"))).await;
-        // Stolen nick must not MODE/KICK without joining
-        w2.write_all(b"MODE #priv +o OpNew\r\nKICK #priv OpNew :nope\r\nPRIVMSG #priv :pwn\r\nQUIT :x\r\n")
+        w2.write_all(b"NICK OpOld\r\nUSER s 0 * :S\r\n")
             .await
             .unwrap();
-        let lines = read_until(&mut r2, |l| l.iter().any(|x| x.contains("ERROR") || x.contains("482") || x.contains("404") || x.contains("441") || x.contains("QUIT") || l.len() > 3)).await;
+        let _ = read_until(&mut r2, |l| l.iter().any(|x| x.contains("001"))).await;
+        // Stolen nick must not MODE/KICK without joining
+        w2.write_all(
+            b"MODE #priv +o OpNew\r\nKICK #priv OpNew :nope\r\nPRIVMSG #priv :pwn\r\nQUIT :x\r\n",
+        )
+        .await
+        .unwrap();
+        let lines = read_until(&mut r2, |l| {
+            l.iter().any(|x| {
+                x.contains("ERROR")
+                    || x.contains("482")
+                    || x.contains("404")
+                    || x.contains("441")
+                    || x.contains("QUIT")
+                    || l.len() > 3
+            })
+        })
+        .await;
         let blob = lines.join("\n");
         assert!(
-            !blob.contains("MODE #priv +o") || blob.contains("482") || blob.contains("442") || blob.contains("401") || blob.contains("403") || blob.contains("441") || blob.contains("404"),
+            !blob.contains("MODE #priv +o")
+                || blob.contains("482")
+                || blob.contains("442")
+                || blob.contains("401")
+                || blob.contains("403")
+                || blob.contains("441")
+                || blob.contains("404"),
             "stolen nick must not exercise op authority: {blob}"
         );
         // OpNew (original) can still kick if somehow needed — at least still op for MODE
         w1.write_all(b"MODE #priv\r\nQUIT :x\r\n").await.unwrap();
-        let op_lines = read_until(&mut r1, |l| l.iter().any(|x| x.contains("324") || x.contains("QUIT"))).await;
+        let op_lines = read_until(&mut r1, |l| {
+            l.iter().any(|x| x.contains("324") || x.contains("QUIT"))
+        })
+        .await;
         assert!(op_lines.iter().any(|l| l.contains("324")), "{op_lines:?}");
     })
     .await;
@@ -203,11 +241,14 @@ async fn oversized_line_disconnects() {
         let huge = "A".repeat(80);
         w.write_all(format!("{huge}\r\n").as_bytes()).await.unwrap();
         let lines = read_until(&mut r, |l| {
-            l.iter().any(|x| x.contains("too long") || x.contains("ERROR"))
+            l.iter()
+                .any(|x| x.contains("too long") || x.contains("ERROR"))
         })
         .await;
         assert!(
-            lines.iter().any(|l| l.contains("too long") || l.contains("ERROR")),
+            lines
+                .iter()
+                .any(|l| l.contains("too long") || l.contains("ERROR")),
             "{lines:?}"
         );
     })
@@ -218,16 +259,27 @@ async fn oversized_line_disconnects() {
 async fn kick_revokes_privmsg_for_victim() {
     let shared = shared_plain();
     with_two_clients(shared, |(mut w1, mut r1), (mut w2, mut r2)| async move {
-        w1.write_all(b"NICK op\r\nUSER o 0 * :O\r\nJOIN #k\r\n").await.unwrap();
+        w1.write_all(b"NICK op\r\nUSER o 0 * :O\r\nJOIN #k\r\n")
+            .await
+            .unwrap();
         let _ = read_until(&mut r1, |l| l.iter().any(|x| x.contains("JOIN"))).await;
-        w2.write_all(b"NICK vic\r\nUSER v 0 * :V\r\nJOIN #k\r\n").await.unwrap();
+        w2.write_all(b"NICK vic\r\nUSER v 0 * :V\r\nJOIN #k\r\n")
+            .await
+            .unwrap();
         let _ = read_until(&mut r2, |l| l.iter().any(|x| x.contains("JOIN"))).await;
         w1.write_all(b"KICK #k vic :out\r\n").await.unwrap();
         let _ = read_until(&mut r2, |l| l.iter().any(|x| x.contains("KICK"))).await;
-        w2.write_all(b"PRIVMSG #k :still here?\r\nQUIT :x\r\n").await.unwrap();
-        let lines = read_until(&mut r2, |l| l.iter().any(|x| x.contains("404") || x.contains("ERROR"))).await;
+        w2.write_all(b"PRIVMSG #k :still here?\r\nQUIT :x\r\n")
+            .await
+            .unwrap();
+        let lines = read_until(&mut r2, |l| {
+            l.iter().any(|x| x.contains("404") || x.contains("ERROR"))
+        })
+        .await;
         assert!(
-            lines.iter().any(|l| l.contains("404") || l.contains("Cannot send")),
+            lines
+                .iter()
+                .any(|l| l.contains("404") || l.contains("Cannot send")),
             "kicked nick must lose send access: {lines:?}"
         );
         w1.write_all(b"QUIT :x\r\n").await.unwrap();
@@ -244,11 +296,19 @@ async fn error_exit_clears_nick_for_reuse() {
         w1.write_all(b"NICK Ghost\r\nUSER g 0 * :G\r\nJOIN #g\r\nQUIT :bye\r\n")
             .await
             .unwrap();
-        let _ = read_until(&mut r1, |l| l.iter().any(|x| x.contains("QUIT") || x.contains("JOIN"))).await;
+        let _ = read_until(&mut r1, |l| {
+            l.iter().any(|x| x.contains("QUIT") || x.contains("JOIN"))
+        })
+        .await;
         // Allow Drop cleanup spawn to run
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        w2.write_all(b"NICK Ghost\r\nUSER g 0 * :G\r\nQUIT :x\r\n").await.unwrap();
-        let lines = read_until(&mut r2, |l| l.iter().any(|x| x.contains("001") || x.contains("433"))).await;
+        w2.write_all(b"NICK Ghost\r\nUSER g 0 * :G\r\nQUIT :x\r\n")
+            .await
+            .unwrap();
+        let lines = read_until(&mut r2, |l| {
+            l.iter().any(|x| x.contains("001") || x.contains("433"))
+        })
+        .await;
         assert!(
             lines.iter().any(|l| l.contains("001")),
             "nick must be free after prior session cleanup: {lines:?}"

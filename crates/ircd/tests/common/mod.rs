@@ -79,11 +79,7 @@ pub async fn read_until(
 }
 
 /// Run one client script against a fresh session (handle_client joined, not spawned).
-pub async fn with_client<F, Fut>(
-    shared: Arc<Mutex<Shared>>,
-    port: u16,
-    client: F,
-) -> Fut::Output
+pub async fn with_client<F, Fut>(shared: Arc<Mutex<Shared>>, port: u16, client: F) -> Fut::Output
 where
     F: FnOnce(
         tokio::io::WriteHalf<DuplexStream>,
@@ -102,10 +98,7 @@ where
     out
 }
 
-pub async fn with_two_clients<F, Fut>(
-    shared: Arc<Mutex<Shared>>,
-    client: F,
-) -> Fut::Output
+pub async fn with_two_clients<F, Fut>(shared: Arc<Mutex<Shared>>, client: F) -> Fut::Output
 where
     F: FnOnce(
         (
@@ -142,7 +135,6 @@ pub fn shared_with_history(path: std::path::PathBuf) -> Arc<Mutex<Shared>> {
 pub fn shared_plain() -> Arc<Mutex<Shared>> {
     Arc::new(Mutex::new(Shared::new(Arc::new(base_cfg(None)), None)))
 }
-
 
 /// Like [`with_client`] but marks the session as TLS-secured (auth allowed under require_tls_for_auth).
 pub async fn with_client_secure<F, Fut>(

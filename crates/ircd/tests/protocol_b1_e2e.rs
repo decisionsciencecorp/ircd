@@ -17,9 +17,12 @@ async fn privmsg_only_to_members() {
     let a = tokio::spawn(async move {
         with_client(shared_a, 1, |mut w, mut r| async move {
             let _ = read_until(&mut r, |ls| ls.len() >= 3).await;
-            w.write_all(b"NICK a\r\nUSER a 0 * :A\r\nJOIN #c\r\n").await.unwrap();
+            w.write_all(b"NICK a\r\nUSER a 0 * :A\r\nJOIN #c\r\n")
+                .await
+                .unwrap();
             let _ = read_until(&mut r, |ls| {
-                ls.iter().any(|l| l.contains("JOIN :#c") || l.contains(" 366 "))
+                ls.iter()
+                    .any(|l| l.contains("JOIN :#c") || l.contains(" 366 "))
             })
             .await;
             let lines = read_until(&mut r, |ls| ls.iter().any(|l| l.contains("PRIVMSG #c"))).await;
@@ -32,7 +35,9 @@ async fn privmsg_only_to_members() {
     let b = tokio::spawn(async move {
         with_client(shared_b, 2, |mut w, mut r| async move {
             let _ = read_until(&mut r, |ls| ls.len() >= 3).await;
-            w.write_all(b"NICK b\r\nUSER b 0 * :B\r\nJOIN #c\r\n").await.unwrap();
+            w.write_all(b"NICK b\r\nUSER b 0 * :B\r\nJOIN #c\r\n")
+                .await
+                .unwrap();
             let _ = read_until(&mut r, |ls| ls.iter().any(|l| l.contains(" 366 "))).await;
             tokio::time::sleep(std::time::Duration::from_millis(80)).await;
             w.write_all(b"PRIVMSG #c :hello-members\r\n").await.unwrap();

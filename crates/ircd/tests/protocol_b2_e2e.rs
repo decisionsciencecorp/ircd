@@ -35,7 +35,11 @@ fn many_members_split_into_multiple_353_payloads() {
     }
     let snap = ch.names_snapshot(&map);
     let parts = snap.split_for_wire(32);
-    assert!(parts.len() > 1, "expected multiple chunks, got {}", parts.len());
+    assert!(
+        parts.len() > 1,
+        "expected multiple chunks, got {}",
+        parts.len()
+    );
     for p in &parts {
         assert!(p.len() <= 32, "chunk {p:?} len {}", p.len());
     }

@@ -19,9 +19,11 @@ async fn mode_minus_o_and_unknown_and_nick_change() {
             .await
             .unwrap();
         let _ = read_until(&mut r2, |l| l.iter().any(|x| x.contains("366"))).await;
-        w1.write_all(b"MODE #m +o other\r\nMODE #m -o other\r\nMODE #m +z\r\nNICK op2\r\nQUIT :x\r\n")
-            .await
-            .unwrap();
+        w1.write_all(
+            b"MODE #m +o other\r\nMODE #m -o other\r\nMODE #m +z\r\nNICK op2\r\nQUIT :x\r\n",
+        )
+        .await
+        .unwrap();
         let lines = read_until(&mut r1, |l| l.iter().any(|x| x.contains("472"))).await;
         assert!(lines.iter().any(|l| l.contains("MODE")));
         assert!(lines.iter().any(|l| l.contains("472")));
@@ -40,9 +42,11 @@ async fn oper_disabled_and_authenticate_abort() {
     };
     let shared = Arc::new(Mutex::new(Shared::new(Arc::new(cfg), None)));
     with_client(shared, 11, |mut w, mut r| async move {
-        w.write_all(b"CAP LS\r\nNICK n\r\nUSER u 0 * :U\r\nCAP REQ :sasl\r\nAUTHENTICATE PLAIN\r\n")
-            .await
-            .unwrap();
+        w.write_all(
+            b"CAP LS\r\nNICK n\r\nUSER u 0 * :U\r\nCAP REQ :sasl\r\nAUTHENTICATE PLAIN\r\n",
+        )
+        .await
+        .unwrap();
         let _ = read_until(&mut r, |l| l.iter().any(|x| x == "AUTHENTICATE +")).await;
         w.write_all(b"AUTHENTICATE *\r\nCAP END\r\nOPER admin x\r\nQUIT :x\r\n")
             .await

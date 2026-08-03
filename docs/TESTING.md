@@ -147,6 +147,20 @@ Honest fanout sizes: **1 / 10 / 100 / 1000** recipients (`fanout_channel/*`). Sn
 
 Gaps filed: no automated Tauri/Mac harness until those clients exist. Server surface for queries is covered by C1 wire tests.
 
+## CI quality gates (C5)
+
+GitHub Actions: `.github/workflows/ci.yml`
+
+| Gate | Command |
+|------|---------|
+| fmt | `cargo fmt --all -- --check` |
+| clippy | `cargo clippy -p ircd -p ircd-core --tests -- -D warnings` |
+| tests | `cargo test -p ircd -p ircd-core --tests --lib` |
+| docs | `cargo test -p ircd -p ircd-core --doc` |
+| audit | `cargo audit` (no rustls-pemfile — PEM via `rustls::pki_types`) |
+| soak | `bash tools/c5_soak.sh` |
+| coverage | tarpaulin fail-under **90** (same flags as above) |
+
 ## Tasks trail
 
 | ID | Slice |

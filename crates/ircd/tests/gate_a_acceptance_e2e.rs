@@ -27,8 +27,10 @@ async fn a1_cap_ls_has_no_false_ads() {
     with_client(shared, 90, |mut w, mut r| async move {
         let _ = read_until(&mut r, |l| l.len() >= 3).await;
         w.write_all(b"CAP LS\r\nQUIT :x\r\n").await.unwrap();
-        let lines = read_until(&mut r, |l| l.iter().any(|x| x.contains("CAP") && x.contains("LS")))
-            .await;
+        let lines = read_until(&mut r, |l| {
+            l.iter().any(|x| x.contains("CAP") && x.contains("LS"))
+        })
+        .await;
         let blob = lines.join("\n");
         for forbidden in ["multi-prefix", "away-notify", "echo-message"] {
             assert!(
@@ -37,7 +39,13 @@ async fn a1_cap_ls_has_no_false_ads() {
             );
         }
         // C3: these are advertised only with wire tests.
-        for required in ["cap-notify", "message-tags", "server-time", "account-tag", "batch"] {
+        for required in [
+            "cap-notify",
+            "message-tags",
+            "server-time",
+            "account-tag",
+            "batch",
+        ] {
             assert!(blob.contains(required), "missing CAP {required}: {blob}");
         }
     })
@@ -60,8 +68,9 @@ async fn a2_nick_steal_does_not_transfer_ops() {
             .await
             .unwrap();
         let lines = read_until(&mut r2, |l| {
-            l.iter()
-                .any(|x| x.contains("482") || x.contains("442") || x.contains("441") || x.contains("404"))
+            l.iter().any(|x| {
+                x.contains("482") || x.contains("442") || x.contains("441") || x.contains("404")
+            })
         })
         .await;
         let blob = lines.join("\n");
@@ -119,7 +128,9 @@ async fn a4_kick_revokes_channel_send() {
         let _ = read_until(&mut r2, |l| l.iter().any(|x| x.contains("366"))).await;
         w1.write_all(b"KICK #k vic :out\r\n").await.unwrap();
         let _ = read_until(&mut r2, |l| l.iter().any(|x| x.contains("KICK"))).await;
-        w2.write_all(b"PRIVMSG #k :nope\r\nQUIT :x\r\n").await.unwrap();
+        w2.write_all(b"PRIVMSG #k :nope\r\nQUIT :x\r\n")
+            .await
+            .unwrap();
         let lines = read_until(&mut r2, |l| l.iter().any(|x| x.contains("404"))).await;
         assert!(lines.iter().any(|l| l.contains("404")), "{lines:?}");
         w1.write_all(b"QUIT :x\r\n").await.unwrap();
@@ -198,9 +209,13 @@ async fn a8_casemap_and_cap_end() {
     with_two_clients(shared, |(mut w1, mut r1), (mut w2, mut r2)| async move {
         let _ = read_until(&mut r1, |l| l.len() >= 3).await;
         let _ = read_until(&mut r2, |l| l.len() >= 3).await;
-        w1.write_all(b"CAP LS\r\nNICK Alice\r\nUSER a 0 * :A\r\n").await.unwrap();
-        let mid = read_until(&mut r1, |l| l.iter().any(|x| x.contains("CAP") && x.contains("LS")))
-            .await;
+        w1.write_all(b"CAP LS\r\nNICK Alice\r\nUSER a 0 * :A\r\n")
+            .await
+            .unwrap();
+        let mid = read_until(&mut r1, |l| {
+            l.iter().any(|x| x.contains("CAP") && x.contains("LS"))
+        })
+        .await;
         assert!(!mid.iter().any(|l| l.contains("001")), "{mid:?}");
         w1.write_all(b"CAP END\r\n").await.unwrap();
         let _ = read_until(&mut r1, |l| l.iter().any(|x| x.contains("001"))).await;
@@ -221,7 +236,11 @@ fn a10_ws_origin_policy() {
     cfg.require_irc_subprotocol = true;
     assert!(evaluate_ws_handshake(None, &["irc".into()], &cfg).is_ok());
     assert!(evaluate_ws_handshake(Some("https://evil"), &["irc".into()], &cfg).is_err());
-    assert!(!origin_allowed(Some("https://evil"), &cfg.allowed_origins, true));
+    assert!(!origin_allowed(
+        Some("https://evil"),
+        &cfg.allowed_origins,
+        true
+    ));
 }
 
 #[test]

@@ -13,12 +13,14 @@ fn trailing_text() -> impl Strategy<Value = String> {
 }
 
 fn tag_atom() -> impl Strategy<Value = String> {
-    ("[A-Za-z][A-Za-z0-9_-]{0,8}", prop::option::of("[A-Za-z0-9_-]{1,8}")).prop_map(
-        |(k, v)| match v {
+    (
+        "[A-Za-z][A-Za-z0-9_-]{0,8}",
+        prop::option::of("[A-Za-z0-9_-]{1,8}"),
+    )
+        .prop_map(|(k, v)| match v {
             Some(val) => format!("{k}={val}"),
             None => k,
-        },
-    )
+        })
 }
 
 proptest! {

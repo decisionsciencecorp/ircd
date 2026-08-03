@@ -45,7 +45,8 @@ async fn invite_only_and_invite() {
             w.write_all(b"JOIN #i\r\n").await.unwrap();
             let lines = read_until(&mut r, |ls| ls.iter().any(|l| l.contains(" 473 "))).await;
             assert!(lines.iter().any(|l| l.contains(" 473 ")));
-            let lines = read_until(&mut r, |ls| ls.iter().any(|l| l.contains("INVITE guest"))).await;
+            let lines =
+                read_until(&mut r, |ls| ls.iter().any(|l| l.contains("INVITE guest"))).await;
             assert!(lines.iter().any(|l| l.contains("INVITE")));
             w.write_all(b"JOIN #i\r\n").await.unwrap();
             let lines = read_until(&mut r, |ls| ls.iter().any(|l| l.contains("JOIN :#i"))).await;
@@ -68,7 +69,9 @@ async fn ban_blocks_join_and_part_reason() {
             let _ = read_until(&mut r, |ls| ls.len() >= 3).await;
             register(&mut w, "chop").await;
             let _ = read_until(&mut r, |ls| ls.iter().any(|l| l.contains(" 001 "))).await;
-            w.write_all(b"JOIN #b\r\nMODE #b +b banned\r\n").await.unwrap();
+            w.write_all(b"JOIN #b\r\nMODE #b +b banned\r\n")
+                .await
+                .unwrap();
             let _ = read_until(&mut r, |ls| ls.iter().any(|l| l.contains("MODE #b +b"))).await;
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
             // see PART with reason from peer

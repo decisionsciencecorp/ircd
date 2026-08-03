@@ -23,11 +23,9 @@ async fn register_join_privmsg_chathistory() {
         let _ = read_until(&mut r1, |l| l.iter().any(|x| x.contains("001 alice"))).await;
         tokio::time::sleep(Duration::from_millis(30)).await;
 
-        w2.write_all(
-            b"CAP LS\r\nNICK bob\r\nUSER b 0 * :B\r\nCAP END\r\nJOIN #lab\r\n",
-        )
-        .await
-        .unwrap();
+        w2.write_all(b"CAP LS\r\nNICK bob\r\nUSER b 0 * :B\r\nCAP END\r\nJOIN #lab\r\n")
+            .await
+            .unwrap();
         let lines = read_until(&mut r2, |l| {
             l.iter().any(|x| x.contains("hello hist")) && l.iter().any(|x| x.contains("366 bob"))
         })
@@ -100,8 +98,10 @@ async fn admission_rejects() {
     with_two_clients(shared, |(mut w1, mut r1), (_w2, mut r2)| async move {
         w1.write_all(b"NICK a\r\nUSER a 0 * :A\r\n").await.unwrap();
         let _ = read_until(&mut r1, |l| l.iter().any(|x| x.contains("Connected"))).await;
-        let lines = read_until(&mut r2, |l| l.iter().any(|x| x.contains("Too many connections")))
-            .await;
+        let lines = read_until(&mut r2, |l| {
+            l.iter().any(|x| x.contains("Too many connections"))
+        })
+        .await;
         assert!(lines.iter().any(|l| l.contains("Too many connections")));
         w1.write_all(b"QUIT :x\r\n").await.unwrap();
     })

@@ -1,0 +1,52 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: fmt
+        run: cargo fmt --all -- --check
+      - name: clippy
+        run: |
+          cargo clippy -p ircd -p ircd-core --lib --bins -- -D warnings -A clippy::too_many_arguments
+          cargo clippy -p ircd -p ircd-core --tests -- -D warnings -A clippy::too_many_arguments -A dead_code -A unused
+      - name: test
+        run: cargo test -p ircd -p ircd-core --tests --lib
+      - name: doc tests
+        run: cargo test -p ircd -p ircd-core --doc
+      - name: audit
+        run: |
+          cargo install cargo-audit --locked
+          cargo audit
+      - name: soak smoke
+        run: bash tools/c5_soak.sh
+
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: install tarpaulin
+        run: cargo install cargo-tarpaulin --locked
+      - name: tarpaulin >=90
+        run: |
+          cargo tarpaulin -p ircd -p ircd-core \
+            --exclude-files '**/ircc/**' \
+            --exclude-files '**/ircd/src/main.rs' \
+            --exclude-files '**/ircd/src/ws.rs' \
+            --exclude-files '**/ircd/src/tls.rs' \
+            --ignore-tests --fail-under 90 --timeout 300

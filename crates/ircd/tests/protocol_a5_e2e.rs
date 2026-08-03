@@ -86,7 +86,9 @@ async fn idle_timeout_disconnects() {
     cfg.security.idle_timeout_secs = 1;
     let shared = Arc::new(Mutex::new(Shared::new(Arc::new(cfg), None)));
     with_client(shared, 34, |mut w, mut r| async move {
-        w.write_all(b"NICK idle\r\nUSER i 0 * :I\r\n").await.unwrap();
+        w.write_all(b"NICK idle\r\nUSER i 0 * :I\r\n")
+            .await
+            .unwrap();
         let _ = read_until(&mut r, |l| l.iter().any(|x| x.contains("001"))).await;
         let lines = read_until(&mut r, |l| l.iter().any(|x| x.contains("Idle timeout"))).await;
         assert!(
@@ -112,7 +114,9 @@ async fn plaintext_oper_refused_when_tls_required() {
             .unwrap();
         let lines = read_until(&mut r, |l| l.iter().any(|x| x.contains("464"))).await;
         assert!(
-            lines.iter().any(|l| l.contains("464") && l.contains("TLS required")),
+            lines
+                .iter()
+                .any(|l| l.contains("464") && l.contains("TLS required")),
             "{lines:?}"
         );
     })

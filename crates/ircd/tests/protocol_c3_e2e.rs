@@ -20,7 +20,9 @@ async fn cap_ls_lists_c3_caps_and_server_time_on_privmsg() {
         w.write_all(b"CAP LS\r\nCAP REQ :message-tags server-time account-tag\r\nCAP END\r\n")
             .await
             .unwrap();
-        w.write_all(b"NICK t\r\nUSER t 0 * :T\r\nJOIN #t\r\n").await.unwrap();
+        w.write_all(b"NICK t\r\nUSER t 0 * :T\r\nJOIN #t\r\n")
+            .await
+            .unwrap();
         let lines = read_until(&mut r, |ls| ls.iter().any(|l| l.contains(" 366 "))).await;
         assert!(lines.iter().any(|l| l.contains("message-tags")));
         assert!(lines.iter().any(|l| l.contains("server-time")));
@@ -63,7 +65,9 @@ async fn server_time_tag_reaches_peer() {
     let b = tokio::spawn(async move {
         with_client(shared_b, 32, |mut w, mut r| async move {
             let _ = read_until(&mut r, |ls| ls.len() >= 3).await;
-            w.write_all(b"NICK b\r\nUSER b 0 * :B\r\nJOIN #st\r\n").await.unwrap();
+            w.write_all(b"NICK b\r\nUSER b 0 * :B\r\nJOIN #st\r\n")
+                .await
+                .unwrap();
             let _ = read_until(&mut r, |ls| ls.iter().any(|l| l.contains(" 366 "))).await;
             tokio::time::sleep(std::time::Duration::from_millis(80)).await;
             w.write_all(b"PRIVMSG #st :timed\r\n").await.unwrap();
