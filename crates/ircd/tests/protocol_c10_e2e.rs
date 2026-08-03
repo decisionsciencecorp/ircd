@@ -98,7 +98,7 @@ fn c10_call_sites_format_after_lock() {
         "must use names_thin under lock"
     );
     // After the JOIN lock closes (`};` on join_result), into_names_snapshot runs.
-    let marker = "let (names_thin, topic) = match join_result";
+    let marker = "let (names_thin, topic, away_join) = match join_result";
     let idx = src.find(marker).expect("join_result match");
     let after = &src[idx..idx + 8000];
     assert!(

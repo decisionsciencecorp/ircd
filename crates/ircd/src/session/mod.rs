@@ -740,14 +740,21 @@ where
                                             let thin = g
                                                 .names_thin(chan)
                                                 .expect("channel just joined");
-                                            Ok(Some((thin, topic)))
+                                            // Snapshot away-notify recipients under the same lock.
+                                            let away_join = g.away_message(conn_id).map(|m| {
+                                                let peers =
+                                                    g.away_notify_in_channel(chan, conn_id);
+                                                let senders = g.clone_outboxes_for(&peers);
+                                                (senders, m.to_string())
+                                            });
+                                            Ok(Some((thin, topic, away_join)))
                                         }
                                     }
                                 }
                             };
-                            let (names_thin, topic) = match join_result {
+                            let (names_thin, topic, away_join) = match join_result {
                                 Ok(None) => continue, // already a member
-                                Ok(Some(pair)) => pair,
+                                Ok(Some(triple)) => triple,
                                 Err(405) => {
                                     writer
                                         .write_all(
@@ -813,13 +820,12 @@ where
                                 .lock()
                                 .await
                                 .fanout_channel(chan, &join_line, conn_id);
-                            // away-notify: notify channel peers when joiner is already away.
-                            {
-                                let g = shared.lock().await;
-                                if let Some(away_msg) = g.away_message(conn_id) {
-                                    let peers = g.away_notify_in_channel(chan, conn_id);
-                                    let away_line = format!(":{prefix} AWAY :{away_msg}\r\n");
-                                    let _ = g.fanout_ids(&peers, &away_line);
+                            // Off-lock away-notify (C10: no contiguous shared.lock before NAMES format).
+                            if let Some((senders, away_msg)) = away_join {
+                                let payload: std::sync::Arc<str> =
+                                    std::sync::Arc::from(format!(":{prefix} AWAY :{away_msg}\r\n"));
+                                for tx in senders {
+                                    let _ = tx.try_send(std::sync::Arc::clone(&payload));
                                 }
                             }
                             match &topic {
