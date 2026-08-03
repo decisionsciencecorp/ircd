@@ -63,7 +63,8 @@ Controllers raise `NotImplementedByController` (or omit optional behaviors) for 
 | Connection `PASS` / link password | Unsupported | No server-password gate in lab config |
 | Services packages (Anope/Atheme) | Unsupported | No services controller; `-m 'not services'` |
 | STS | Unsupported | `supports_sts = False`; cap not advertised |
-| `multi-prefix`, `echo-message`, `away-notify`, `account-notify`, `extended-join`, `labeled-response`, `setname`, `MONITOR`, … | Not advertised | Do not REQ in curated probes; NAK is correct if a client asks |
+| `multi-prefix`, `echo-message`, `account-notify`, `extended-join`, `labeled-response`, `setname`, `MONITOR`, … | Not advertised | Do not REQ in curated probes; NAK is correct if a client asks |
+| `away-notify` | **Advertised** (F1a) | In-tree `protocol_f1a_e2e`; promote irctest AWAY modules into `-k` when green |
 | Ban/invite exception modes (`+e` / `+I`) | Optional behavior absent | Not in `optional_behaviors` |
 | Ergo / Sable / implementation-specific tests | Out of scope | Marker-excluded |
 

@@ -24,6 +24,7 @@ from irctest.specifications import Capabilities, OptionalBehaviors
 ADVERTISED_CAPS = frozenset(
     (
         Capabilities.ACCOUNT_TAG,
+        Capabilities.AWAY_NOTIFY,
         Capabilities.BATCH,
         Capabilities.MESSAGE_TAGS,
         Capabilities.SERVER_TIME,

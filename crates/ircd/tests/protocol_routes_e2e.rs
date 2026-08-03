@@ -145,7 +145,7 @@ async fn truthful_cap_ls_omits_unimplemented() {
             .iter()
             .find(|x| x.contains("LS"))
             .expect("CAP LS line");
-        for bad in ["away-notify", "multi-prefix", "echo-message"] {
+        for bad in ["multi-prefix", "echo-message"] {
             assert!(
                 !ls.to_ascii_lowercase().contains(bad),
                 "CAP LS must not advertise {bad}: {ls}"
@@ -157,6 +157,7 @@ async fn truthful_cap_ls_omits_unimplemented() {
             "account-tag",
             "batch",
             "cap-notify",
+            "away-notify",
         ] {
             assert!(
                 ls.to_ascii_lowercase().contains(good),

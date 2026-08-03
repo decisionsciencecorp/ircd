@@ -235,6 +235,10 @@ pub struct Shared {
     /// Legacy broadcast retained for microbench comparison only — sessions use outboxes.
     bus: broadcast::Sender<BusMsg>,
     outboxes: HashMap<ClientId, mpsc::Sender<std::sync::Arc<str>>>,
+    /// Away message when present (F1a).
+    away: HashMap<ClientId, String>,
+    /// Clients that negotiated `away-notify` (F1a).
+    away_notify: HashSet<ClientId>,
     config: Arc<Config>,
     history: Option<Arc<HistoryStore>>,
     ip_counts: HashMap<String, usize>,
@@ -251,6 +255,8 @@ impl Shared {
             channels: HashMap::new(),
             bus,
             outboxes: HashMap::new(),
+            away: HashMap::new(),
+            away_notify: HashSet::new(),
             config,
             history,
             ip_counts: HashMap::new(),
@@ -365,6 +371,66 @@ impl Shared {
         let nick = self.id_to_nick.remove(&id)?;
         self.nicks.remove(&ircd_core::ascii_casefold(&nick));
         Some(nick)
+    }
+
+    /// Drop away / cap tracking for a disconnecting client (F1a).
+    pub fn clear_session_meta(&mut self, id: ClientId) {
+        self.away.remove(&id);
+        self.away_notify.remove(&id);
+    }
+
+    pub fn set_away(&mut self, id: ClientId, message: String) {
+        self.away.insert(id, message);
+    }
+
+    pub fn clear_away(&mut self, id: ClientId) -> bool {
+        self.away.remove(&id).is_some()
+    }
+
+    pub fn away_message(&self, id: ClientId) -> Option<&str> {
+        self.away.get(&id).map(String::as_str)
+    }
+
+    pub fn set_away_notify(&mut self, id: ClientId, enabled: bool) {
+        if enabled {
+            self.away_notify.insert(id);
+        } else {
+            self.away_notify.remove(&id);
+        }
+    }
+
+    /// Peers who share a channel with `id`, have `away-notify`, excluding `id`.
+    pub fn away_notify_peers(&self, id: ClientId) -> Vec<ClientId> {
+        let mut seen = HashSet::new();
+        let mut out = Vec::new();
+        for ch in self.channels.values() {
+            if !ch.members.contains(&id) {
+                continue;
+            }
+            for peer in &ch.members {
+                if *peer == id || !self.away_notify.contains(peer) {
+                    continue;
+                }
+                if seen.insert(*peer) {
+                    out.push(*peer);
+                }
+            }
+        }
+        out
+    }
+
+    /// Members of `channel` with `away-notify`, excluding `skip`.
+    pub fn away_notify_in_channel(&self, channel: &str, skip: ClientId) -> Vec<ClientId> {
+        self.channels
+            .get(channel)
+            .map(|ch| {
+                ch.members
+                    .iter()
+                    .copied()
+                    .filter(|id| *id != skip && self.away_notify.contains(id))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     pub fn remove_nick_key(&mut self, folded_key: &str) {
@@ -490,6 +556,7 @@ impl Shared {
 
     pub fn unregister_outbox(&mut self, id: ClientId) {
         self.outboxes.remove(&id);
+        self.clear_session_meta(id);
     }
 
     /// Deliver `line` to every current channel member except `skip`.

@@ -1,7 +1,7 @@
 # Full client protocol acceptance matrix — dsc-ircd
 
 **Bar (Mark, 2026-08-03):** full Modern IRC + advertised IRCv3 — **not** a v0 subset.  
-**Tip probed:** `409e873` (Gate A–C closed).  
+**Tip probed:** `9090a5b`+ (F0 matrix; F1a AWAY in progress / landed — update tip on F1a close)  
 **Program:** Tasks [Doc #976](https://tasks.decisionsciencecorp.com/admin/doc.php?id=976) · Matrix [Doc #977](https://tasks.decisionsciencecorp.com/admin/doc.php?id=977) · Epic [#2251](https://tasks.decisionsciencecorp.com/admin/view.php?id=2251) · F0 [#2252](https://tasks.decisionsciencecorp.com/admin/view.php?id=2252)  
 **Standing coverage:** [#2214](https://tasks.decisionsciencecorp.com/admin/view.php?id=2214) (≥90% tarpaulin after code slices)  
 **irctest allowlist:** [`IRCTEST.md`](IRCTEST.md)
@@ -24,7 +24,7 @@
 | Unreal module ecosystem parity | Ops reference only; not a GPL port checklist |
 | Public zero1 bind | Ops ([#2210](https://tasks.decisionsciencecorp.com/admin/view.php?id=2210)); parallel after Gate A |
 | Ban/invite **exceptions** (`+e` / `+I`) | Optional; not claimed in `optional_behaviors` / IRCTEST allowlist |
-| Caps we do **not** advertise (`multi-prefix`, `echo-message`, `away-notify` *until F1a*, `account-notify`, `extended-join`, `labeled-response`, `setname`, `MONITOR`, STS, …) | NAK on REQ is correct until we implement + advertise |
+| Caps we do **not** advertise (`multi-prefix`, `echo-message`, `account-notify`, `extended-join`, `labeled-response`, `setname`, `MONITOR`, STS, …) | NAK on REQ is correct until we implement + advertise |
 
 ---
 
@@ -67,7 +67,7 @@
 | WHO | PARTIAL | Channel/mask; flags `H`/`H@` only; **WHOX advertised but not implemented** | F1c | C1 |
 | WHOIS | PARTIAL | 311/312/319/318; no account/away/oper detail | F1c | C1 |
 | INVITE verb | PARTIAL | 341 + delivery; non-member error shape weak; no invite-notify | F1b | session |
-| AWAY | MISSING | → 421; `away-notify` unadvertised | F1a | Doc #974 tip errata |
+| AWAY | PASS | Set/clear → 306/305; WHOIS/PRIVMSG 301; WHO `G`/`H` | — | `protocol_f1a_e2e` |
 | USERHOST / ISON / TIME / INFO | MISSING | → 421 | F1d | — |
 
 ---
@@ -83,7 +83,7 @@
 | `batch` | always | PARTIAL | CHATHISTORY framing + `@batch=`; nesting/vocabulary incomplete | F2b / F3 |
 | `sasl=PLAIN` | when accounts | PARTIAL | Happy path; chunking / 905 / 907 / reauth edges | F2c |
 | `draft/chathistory` | when history | PARTIAL | **LATEST only**; BATCH type; auto-replay still on; no MSGREFTYPES | F3 |
-| `away-notify` | **no** | MISSING | Implement with AWAY then advertise | F1a |
+| `away-notify` | always | PASS | Shared-channel notify on set/clear/join; not to self | — |
 
 Do **not** advertise a new cap in the same commit that leaves behavior incomplete.
 

@@ -233,6 +233,8 @@ where
                     &mut cap_negotiating,
                     &mut enabled_caps,
                     &cap_list,
+                    &shared,
+                    conn_id,
                 )
                 .await?;
                 if msg
@@ -811,6 +813,15 @@ where
                                 .lock()
                                 .await
                                 .fanout_channel(chan, &join_line, conn_id);
+                            // away-notify: notify channel peers when joiner is already away.
+                            {
+                                let g = shared.lock().await;
+                                if let Some(away_msg) = g.away_message(conn_id) {
+                                    let peers = g.away_notify_in_channel(chan, conn_id);
+                                    let away_line = format!(":{prefix} AWAY :{away_msg}\r\n");
+                                    let _ = g.fanout_ids(&peers, &away_line);
+                                }
+                            }
                             match &topic {
                                 Some(t) => {
                                     writer
@@ -1069,7 +1080,20 @@ where
                                 line = prepend_tag(&line, "account", acc);
                             }
                             line = relay_client_tags(line, &msg, &enabled_caps);
-                            let _ = shared.lock().await.fanout_ids(&[tid], &line);
+                            let away_reply = {
+                                let g = shared.lock().await;
+                                let away = g.away_message(tid).map(str::to_string);
+                                let _ = g.fanout_ids(&[tid], &line);
+                                away
+                            };
+                            if let Some(msg) = away_reply.as_deref() {
+                                writer
+                                    .write_all(
+                                        numeric(server_name, 301, nick_s, &[target.as_str(), msg])
+                                            .as_bytes(),
+                                    )
+                                    .await?;
+                            }
                         }
                         continue;
                     }
@@ -1876,8 +1900,13 @@ where
                                 if let Some(ch) = g.channel(mask) {
                                     for id in ch.members.clone() {
                                         if let Some(n) = g.display_nick(id) {
-                                            let flags =
-                                                if ch.ops.contains(&id) { "H@" } else { "H" };
+                                            let away = g.away_message(id).is_some();
+                                            let flags = match (away, ch.ops.contains(&id)) {
+                                                (true, true) => "G@",
+                                                (true, false) => "G",
+                                                (false, true) => "H@",
+                                                (false, false) => "H",
+                                            };
                                             out.push((
                                                 mask.to_string(),
                                                 n.to_string(),
@@ -1887,11 +1916,16 @@ where
                                     }
                                 }
                             } else {
-                                for (display, _id) in g.nick_entries() {
+                                for (display, id) in g.nick_entries() {
                                     let key = ascii_casefold(&display);
                                     if mask == "0" || mask == "*" || key.eq_ignore_ascii_case(mask)
                                     {
-                                        out.push(("*".into(), display, "H".into()));
+                                        let flags = if g.away_message(id).is_some() {
+                                            "G"
+                                        } else {
+                                            "H"
+                                        };
+                                        out.push(("*".into(), display, flags.into()));
                                     }
                                 }
                             }
@@ -1950,10 +1984,11 @@ where
                                 let nick =
                                     g.display_nick(id).unwrap_or(target.as_str()).to_string();
                                 let chans = g.whois_channels(id);
-                                (nick, chans)
+                                let away = g.away_message(id).map(str::to_string);
+                                (nick, chans, away)
                             })
                         };
-                        let Some((who_nick, chans)) = info else {
+                        let Some((who_nick, chans, away)) = info else {
                             writer
                                 .write_all(
                                     numeric(
@@ -1978,6 +2013,19 @@ where
                                 .as_bytes(),
                             )
                             .await?;
+                        if let Some(msg) = away.as_deref() {
+                            writer
+                                .write_all(
+                                    numeric(
+                                        server_name,
+                                        301,
+                                        nick_s,
+                                        &[who_nick.as_str(), msg],
+                                    )
+                                    .as_bytes(),
+                                )
+                                .await?;
+                        }
                         writer
                             .write_all(
                                 numeric(
@@ -2112,6 +2160,52 @@ where
                         continue;
                     }
 
+                    Command::Away { message } => {
+                        match message {
+                            Some(text) => {
+                                {
+                                    let mut g = shared.lock().await;
+                                    g.set_away(conn_id, text.clone());
+                                    let peers = g.away_notify_peers(conn_id);
+                                    let line = format!(":{prefix} AWAY :{text}\r\n");
+                                    let _ = g.fanout_ids(&peers, &line);
+                                }
+                                writer
+                                    .write_all(
+                                        numeric(
+                                            server_name,
+                                            306,
+                                            nick_s,
+                                            &["You have been marked as being away"],
+                                        )
+                                        .as_bytes(),
+                                    )
+                                    .await?;
+                            }
+                            None => {
+                                {
+                                    let mut g = shared.lock().await;
+                                    g.clear_away(conn_id);
+                                    let peers = g.away_notify_peers(conn_id);
+                                    let line = format!(":{prefix} AWAY\r\n");
+                                    let _ = g.fanout_ids(&peers, &line);
+                                }
+                                writer
+                                    .write_all(
+                                        numeric(
+                                            server_name,
+                                            305,
+                                            nick_s,
+                                            &["You are no longer marked as being away"],
+                                        )
+                                        .as_bytes(),
+                                    )
+                                    .await?;
+                            }
+                        }
+                        continue;
+                    }
+
                     Command::Unknown { verb } => {
                         writer
                             .write_all(
@@ -2231,7 +2325,7 @@ mod tests {
     fn advertised_caps_truthful_base_empty_sasl_conditional() {
         let with = advertised_caps(true, true);
         assert!(with.iter().any(|c| c.starts_with("sasl")));
-        assert!(!with.iter().any(|c| c == "away-notify"));
+        assert!(with.iter().any(|c| c == "away-notify"));
         assert!(with.iter().any(|c| c == "message-tags"));
         assert!(with.iter().any(|c| c == "batch"));
         assert!(with.iter().any(|c| c == "draft/chathistory"));

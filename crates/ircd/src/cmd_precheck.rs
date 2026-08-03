@@ -427,6 +427,7 @@ pub fn base_cap_names() -> &'static [&'static str] {
         "server-time",
         "account-tag",
         "batch",
+        "away-notify",
     ]
 }
 
@@ -666,7 +667,7 @@ mod tests {
         let tokens = isupport_tokens(30, 50);
         assert!(tokens.iter().any(|t| t.starts_with("NICKLEN=")));
         assert!(isupport_joined(30, 50).contains("CASEMAPPING=ascii"));
-        assert_eq!(base_cap_names().len(), 5);
+        assert_eq!(base_cap_names().len(), 6);
         assert!(optional_cap_names(true, true).contains(&"sasl"));
         assert!(advertise_caps(true, false)
             .iter()

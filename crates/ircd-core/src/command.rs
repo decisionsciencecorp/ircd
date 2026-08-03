@@ -81,6 +81,11 @@ pub enum Command {
     Motd,
     Version,
     Lusers,
+    /// Set or clear away status (Modern IRC + IRCv3 `away-notify`).
+    Away {
+        /// `None` = clear away; `Some` = set (message may be empty).
+        message: Option<String>,
+    },
     Chathistory {
         params: Vec<String>,
     },
@@ -157,6 +162,7 @@ impl Command {
             "MOTD" => Self::Motd,
             "VERSION" => Self::Version,
             "LUSERS" => Self::Lusers,
+            "AWAY" => Self::Away { message: at(0) },
             "CHATHISTORY" => Self::Chathistory { params: p.clone() },
             _ => Self::Unknown {
                 verb: line.command.clone(),
@@ -191,6 +197,7 @@ impl Command {
             Self::Motd => "MOTD",
             Self::Version => "VERSION",
             Self::Lusers => "LUSERS",
+            Self::Away { .. } => "AWAY",
             Self::Chathistory { .. } => "CHATHISTORY",
             Self::Unknown { verb } => verb.as_str(),
         }
@@ -219,7 +226,8 @@ impl Command {
             | Self::Admin
             | Self::Motd
             | Self::Version
-            | Self::Lusers => "session",
+            | Self::Lusers
+            | Self::Away { .. } => "session",
             Self::Oper { .. } => "oper",
             Self::Join { .. }
             | Self::Part { .. }
@@ -319,6 +327,8 @@ mod tests {
             ("MOTD", "MOTD"),
             ("VERSION", "VERSION"),
             ("LUSERS", "LUSERS"),
+            ("AWAY :gone", "AWAY"),
+            ("AWAY", "AWAY"),
             ("CHATHISTORY LATEST #x * 5", "CHATHISTORY"),
             ("ZZZ", "ZZZ"),
         ];

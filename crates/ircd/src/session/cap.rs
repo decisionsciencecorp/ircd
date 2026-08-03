@@ -1,11 +1,15 @@
 //! CAP / SASL negotiation handlers (H-14).
 
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use anyhow::Result;
 use ircd_core::{numeric, RawLine};
 use tokio::io::AsyncWriteExt;
+use tokio::sync::Mutex;
 use tracing::info;
+
+use crate::state::{ClientId, Shared};
 
 /// Caps advertised without per-cap conformance tests must stay empty (A1 / Doc #974).
 /// SASL is added conditionally in `advertised_caps` when accounts exist.
@@ -15,6 +19,7 @@ pub(crate) const BASE_CAPS: &[&str] = &[
     "server-time",
     "account-tag",
     "batch",
+    "away-notify",
 ];
 
 pub(crate) fn advertised_caps(has_accounts: bool, has_history: bool) -> Vec<String> {
@@ -104,6 +109,8 @@ pub(crate) async fn handle_cap<W>(
     cap_negotiating: &mut bool,
     enabled_caps: &mut HashSet<String>,
     advertised: &[String],
+    shared: &Arc<Mutex<Shared>>,
+    conn_id: ClientId,
 ) -> Result<()>
 where
     W: AsyncWriteExt + Unpin,
@@ -143,6 +150,9 @@ where
                 )
                 .await?;
         }
+        // Mirror away-notify into Shared for peer fanout (F1a).
+        let has_away = has_cap(enabled_caps, "away-notify");
+        shared.lock().await.set_away_notify(conn_id, has_away);
         return Ok(());
     }
     if sub.eq_ignore_ascii_case("END") {
