@@ -1,7 +1,7 @@
 # Full client protocol acceptance matrix — dsc-ircd
 
 **Bar (Mark, 2026-08-03):** full Modern IRC + advertised IRCv3 — **not** a v0 subset.  
-**Tip probed:** `61d9043` (F0 matrix + F1a AWAY/`away-notify`)  
+**Tip probed:** F1b landing (INVITE numerics + CHANMODES=b,,,nti)
 **Program:** Tasks [Doc #976](https://tasks.decisionsciencecorp.com/admin/doc.php?id=976) · Matrix [Doc #977](https://tasks.decisionsciencecorp.com/admin/doc.php?id=977) · Epic [#2251](https://tasks.decisionsciencecorp.com/admin/view.php?id=2251) · F0 [#2252](https://tasks.decisionsciencecorp.com/admin/view.php?id=2252)  
 **Standing coverage:** [#2214](https://tasks.decisionsciencecorp.com/admin/view.php?id=2214) (≥90% tarpaulin after code slices)  
 **irctest allowlist:** [`IRCTEST.md`](IRCTEST.md)
@@ -33,7 +33,7 @@
 | Surface | Status | Tip notes | Phase | In-tree / irctest |
 |---------|--------|-----------|-------|-------------------|
 | NICK + USER → 001–004 | PASS | Registration path | — | `protocol_*_e2e` |
-| 005 ISUPPORT | PASS | CASEMAPPING=ascii, CHANTYPES, PREFIX=(o)@, NICKLEN, CHANNELLEN, CHANMODES=,,,nt, NETWORK, UTF8*, WHOX, CLIENTTAGDENY, TARGMAX; `CHATHISTORY=<n>` when history on | — | register / C7 |
+| 005 ISUPPORT | PASS | CASEMAPPING=ascii, CHANTYPES, PREFIX=(o)@, NICKLEN, CHANNELLEN, CHANMODES=b,,,nti, NETWORK, UTF8*, WHOX, CLIENTTAGDENY, TARGMAX; `CHATHISTORY=<n>` when history on | — | register / C7 |
 | 005 `MSGREFTYPES` | MISSING | Omitted while LATEST ignores refs — required when F3 lands refs | F3 | — |
 | CAP LS/LIST/REQ/END + atomic NAK | PASS | Mixed unknown → full NAK | — | `protocol_c3_e2e`, irctest CAP probes |
 | `cap-notify` | PASS | Always on; cannot disable | — | CAP e2e |
@@ -59,14 +59,14 @@
 | TOPIC | PASS | `+t` op check | — | protocol e2e |
 | KICK | PASS | Authoritative membership | — | protocol e2e |
 | MODE `+o` / `+n` / `+t` | PASS | Multi-arg `+oo` (C8) | — | `protocol_c8_e2e` |
-| MODE `+i` + INVITE list | PARTIAL | Invite-only JOIN + invite consume work; INVITE numerics/edge cases incomplete | F1b | session INVITE/`mode_i` |
-| MODE `+b` bans | PARTIAL | Add/remove/list (367/368) + JOIN deny; mask matching simple; no `+e`/`+I` (NON-GOAL) | F1b | cmd_precheck bans |
+| MODE `+i` + INVITE list | PASS | Invite-only JOIN + invite consume; INVITE 403/442/482/401/443/341 | — | `protocol_c2_e2e` / `protocol_f1b_e2e` |
+| MODE `+b` bans | PASS | Add/remove/list (367/368) + JOIN 474; simple masks; no `+e`/`+I` (NON-GOAL) | — | `protocol_c2_e2e` |
 | User modes | MISSING | Silently ignored (except oper path separate) | F4 | — |
 | Standalone NAMES | PARTIAL | Works; wire split / multi-channel TARGMAX honesty TBD | F1c | C1 / curated JoinNamreply |
 | LIST | PARTIAL | Basic; filters/limits TBD | F1c | C1 |
 | WHO | PARTIAL | Channel/mask; flags `H`/`H@` only; **WHOX advertised but not implemented** | F1c | C1 |
 | WHOIS | PARTIAL | 311/312/319/318; no account/away/oper detail | F1c | C1 |
-| INVITE verb | PARTIAL | 341 + delivery; non-member error shape weak; no invite-notify | F1b | session |
+| INVITE verb | PASS | 341 + delivery; 403/442/482/401/443; invite-notify unadvertised (ok) | — | `protocol_f1b_e2e` |
 | AWAY | PASS | Set/clear → 306/305; WHOIS/PRIVMSG 301; WHO `G`/`H` | — | `protocol_f1a_e2e` |
 | USERHOST / ISON / TIME / INFO | MISSING | → 421 | F1d | — |
 
@@ -112,7 +112,7 @@ Do **not** advertise a new cap in the same commit that leaves behavior incomplet
 | Channel op kick/topic/mode subset | PASS | — |
 | KILL | MISSING | F4 |
 | WALLOPS | MISSING | F4 |
-| Claimed CHANMODES completeness | PARTIAL (`,,,nt` + runtime `i`/`b` not fully reflected in 005) | F1b / F4 |
+| Claimed CHANMODES completeness | PASS for `b,,,nti` (no `+e`/`+I`) | — |
 
 ---
 

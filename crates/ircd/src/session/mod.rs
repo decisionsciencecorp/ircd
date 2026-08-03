@@ -1714,60 +1714,111 @@ where
                                 .await?;
                             continue;
                         };
-                        let (allowed, tid) = {
+                        // F1b: Modern numerics — 403/442/482/401/443 then 341 + INVITE.
+                        let decision = {
                             let g = shared.lock().await;
-                            let tid = g.nick_id(&ascii_casefold(who));
-                            let allowed = match g.channel(chan.as_str()) {
-                                Some(ch) if ch.members.contains(&conn_id) => {
-                                    is_oper || ch.is_op(conn_id) || !ch.mode_i
+                            match g.channel(chan.as_str()) {
+                                None => Err(403u16),
+                                Some(ch) if !ch.members.contains(&conn_id) => Err(442),
+                                Some(ch) if !(is_oper || ch.is_op(conn_id) || !ch.mode_i) => {
+                                    Err(482)
                                 }
-                                Some(_) => false,
-                                None => false,
-                            };
-                            (allowed, tid)
+                                Some(ch) => match g.nick_id(&ascii_casefold(who)) {
+                                    None => Err(401),
+                                    Some(tid) if ch.members.contains(&tid) => Err(443),
+                                    Some(tid) => Ok(tid),
+                                },
+                            }
                         };
-                        if !allowed {
-                            writer
-                                .write_all(
-                                    numeric(
-                                        server_name,
-                                        482,
-                                        nick_s,
-                                        &[chan.as_str(), "You're not channel operator"],
+                        match decision {
+                            Err(403) => {
+                                writer
+                                    .write_all(
+                                        numeric(
+                                            server_name,
+                                            403,
+                                            nick_s,
+                                            &[chan.as_str(), "No such channel"],
+                                        )
+                                        .as_bytes(),
                                     )
-                                    .as_bytes(),
-                                )
-                                .await?;
-                            continue;
-                        }
-                        let Some(tid) = tid else {
-                            writer
-                                .write_all(
-                                    numeric(
-                                        server_name,
-                                        401,
-                                        nick_s,
-                                        &[who.as_str(), "No such nick/channel"],
+                                    .await?;
+                            }
+                            Err(442) => {
+                                writer
+                                    .write_all(
+                                        numeric(
+                                            server_name,
+                                            442,
+                                            nick_s,
+                                            &[chan.as_str(), "You're not on that channel"],
+                                        )
+                                        .as_bytes(),
                                     )
-                                    .as_bytes(),
-                                )
-                                .await?;
-                            continue;
-                        };
-                        {
-                            let mut g = shared.lock().await;
-                            if let Some(ch) = g.channel_mut(chan.as_str()) {
-                                ch.invites.insert(tid);
+                                    .await?;
+                            }
+                            Err(482) => {
+                                writer
+                                    .write_all(
+                                        numeric(
+                                            server_name,
+                                            482,
+                                            nick_s,
+                                            &[chan.as_str(), "You're not channel operator"],
+                                        )
+                                        .as_bytes(),
+                                    )
+                                    .await?;
+                            }
+                            Err(401) => {
+                                writer
+                                    .write_all(
+                                        numeric(
+                                            server_name,
+                                            401,
+                                            nick_s,
+                                            &[who.as_str(), "No such nick/channel"],
+                                        )
+                                        .as_bytes(),
+                                    )
+                                    .await?;
+                            }
+                            Err(443) => {
+                                writer
+                                    .write_all(
+                                        numeric(
+                                            server_name,
+                                            443,
+                                            nick_s,
+                                            &[who.as_str(), chan.as_str(), "is already on channel"],
+                                        )
+                                        .as_bytes(),
+                                    )
+                                    .await?;
+                            }
+                            Err(_) => {}
+                            Ok(tid) => {
+                                {
+                                    let mut g = shared.lock().await;
+                                    if let Some(ch) = g.channel_mut(chan.as_str()) {
+                                        ch.invites.insert(tid);
+                                    }
+                                }
+                                writer
+                                    .write_all(
+                                        numeric(
+                                            server_name,
+                                            341,
+                                            nick_s,
+                                            &[who.as_str(), chan.as_str()],
+                                        )
+                                        .as_bytes(),
+                                    )
+                                    .await?;
+                                let line = format!(":{prefix} INVITE {who} :{chan}\r\n");
+                                let _ = shared.lock().await.fanout_ids(&[tid], &line);
                             }
                         }
-                        writer
-                            .write_all(
-                                numeric(server_name, 341, nick_s, &[who.as_str(), chan.as_str()])
-                                    .as_bytes(),
-                            )
-                            .await?;
-                        let line = format!(":{prefix} INVITE {who} :{chan}\r\n");
-                        let _ = shared.lock().await.fanout_ids(&[tid], &line);
                         continue;
                     }
 

@@ -403,7 +403,7 @@ pub fn isupport_tokens(nick_len: u32, chan_len: u32) -> Vec<String> {
         "PREFIX=(o)@".into(),
         format!("NICKLEN={nick_len}"),
         format!("CHANNELLEN={chan_len}"),
-        "CHANMODES=,,,nt".into(),
+        "CHANMODES=b,,,nti".into(),
         "NETWORK=DSC".into(),
         "UTF8MAPPING=rfc8265".into(),
         "UTF8ONLY".into(),

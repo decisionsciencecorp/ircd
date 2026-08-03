@@ -85,7 +85,7 @@ where
         )
         .await?;
     let mut isupport = format!(
-        "CASEMAPPING=ascii CHANTYPES=# PREFIX=(o)@ NICKLEN={nick_len} CHANNELLEN={chan_len} CHANMODES=,,,nt NETWORK=DSC"
+        "CASEMAPPING=ascii CHANTYPES=# PREFIX=(o)@ NICKLEN={nick_len} CHANNELLEN={chan_len} CHANMODES=b,,,nti NETWORK=DSC"
     );
     if let Some(max) = chathistory_max {
         isupport.push_str(&format!(" CHATHISTORY={max}"));
