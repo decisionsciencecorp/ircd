@@ -21,13 +21,17 @@ UnrealIRCd is **GPL-2.0**. This repository is a **new Rust codebase**. We:
 
 See Tasks [Doc #972](https://tasks.decisionsciencecorp.com/admin/doc.php?id=972).
 
-## v0 server goals (draft)
+## Client protocol bar (2026-08-03)
 
-1. Single-node TCP + TLS IRCd.
-2. NICK/USER/CAP registration, JOIN/PART/PRIVMSG, basic modes.
-3. IRCv3 capability negotiation path (grow toward message-tags / server-time / CHATHISTORY).
+**Full** Modern IRC + advertised IRCv3 compliance (not a v0 subset). Living scorecard: [`PROTOCOL-MATRIX.md`](PROTOCOL-MATRIX.md) · Tasks program Doc **#976** · epic **#2251**.
+
+## Server goals
+
+1. Single-node TCP + TLS (+ WebSocket) IRCd.
+2. NICK/USER/CAP registration, messaging, channels, modes, queries — see matrix.
+3. Every **advertised** IRCv3 capability fully implemented and tested.
 4. Config shape familiar to Unreal admins where it does not fight Rust structure.
-5. Clean handoff to Tauri/web + Swift clients on the Mark × Cody board (Tasks project 48).
+5. Clean handoff to Tauri/web + Swift clients on board **ircd + clients & sidecars** (Tasks project 48).
 
 ## Config mapping (Unreal concepts → dsc-ircd TOML)
 

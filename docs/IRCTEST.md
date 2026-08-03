@@ -1,6 +1,7 @@
 # irctest (progval) — dsc-ircd controller and curated CI
 
-Decision Science Corp · `dsc-ircd` · Tasks **#2235** (C6) · Doc **#974** Ongoing conformance gate
+Decision Science Corp · `dsc-ircd` · Tasks **#2235** (C6) · Doc **#974** Ongoing conformance gate  
+**Full-compliance acceptance matrix:** [`PROTOCOL-MATRIX.md`](PROTOCOL-MATRIX.md) · Tasks Doc **#976** / F0 **#2252**
 
 This tree ships an in-repo [progval/irctest](https://github.com/progval/irctest) **controller** so CI (and local lab) can drive the real `ircd` binary without forking irctest.
 
