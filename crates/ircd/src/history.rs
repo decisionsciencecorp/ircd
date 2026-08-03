@@ -746,9 +746,14 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(5));
         let b = store.append("#c", "p", "b").unwrap();
         assert!(b.ts_ms >= a.ts_ms);
-        let bias = a.ts_ms + (b.ts_ms - a.ts_ms).max(1) * 3 / 4;
+        let toward_b = a.ts_ms + (b.ts_ms - a.ts_ms).max(1) * 3 / 4;
+        let toward_a = a.ts_ms + (b.ts_ms - a.ts_ms).max(1) / 4;
         assert!(!store
-            .around("#c", HistBound::TsMs(bias), 3)
+            .around("#c", HistBound::TsMs(toward_b), 3)
+            .unwrap()
+            .is_empty());
+        assert!(!store
+            .around("#c", HistBound::TsMs(toward_a), 3)
             .unwrap()
             .is_empty());
         assert!(!store
