@@ -1,10 +1,10 @@
-//! Shared server state: channels, nicks, admission, broadcast bus.
+//! Shared server state: channels, nicks, admission, member-targeted outboxes.
 
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, mpsc};
 
 use crate::config::Config;
 use crate::history::HistoryStore;
@@ -89,6 +89,18 @@ impl ChannelState {
     }
 }
 
+/// Result of a member-targeted fanout attempt (H-07/H-08).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FanoutStats {
+    pub attempted: usize,
+    pub delivered: usize,
+    pub dropped: usize,
+    pub missing_outbox: usize,
+}
+
+/// Default per-client outbound queue depth (slow-consumer: try_send drop).
+pub const OUTBOX_CAP: usize = 64;
+
 pub struct Shared {
     pub next_id: ClientId,
     /// Display nick → connection id (single nick registration for v0)
@@ -97,7 +109,10 @@ pub struct Shared {
     pub id_to_nick: HashMap<ClientId, String>,
     /// channel → state
     pub channels: HashMap<String, ChannelState>,
+    /// Legacy broadcast retained for microbench comparison only — sessions use outboxes.
     pub bus: broadcast::Sender<BusMsg>,
+    /// Per-connection bounded outbound queues (member-targeted routing).
+    pub outboxes: HashMap<ClientId, mpsc::Sender<String>>,
     pub config: Arc<Config>,
     pub history: Option<Arc<HistoryStore>>,
     /// peer IP → active connection count
@@ -114,11 +129,53 @@ impl Shared {
             id_to_nick: HashMap::new(),
             channels: HashMap::new(),
             bus,
+            outboxes: HashMap::new(),
             config,
             history,
             ip_counts: HashMap::new(),
             client_count: 0,
         }
+    }
+
+    pub fn register_outbox(&mut self, id: ClientId, tx: mpsc::Sender<String>) {
+        self.outboxes.insert(id, tx);
+    }
+
+    pub fn unregister_outbox(&mut self, id: ClientId) {
+        self.outboxes.remove(&id);
+    }
+
+    /// Deliver `line` to every current channel member except `skip`.
+    /// Slow consumers: bounded `try_send` — full queues count as `dropped`.
+    pub fn fanout_channel(&self, channel: &str, line: &str, skip: ClientId) -> FanoutStats {
+        let Some(ch) = self.channels.get(channel) else {
+            return FanoutStats::default();
+        };
+        let ids: Vec<ClientId> = ch
+            .members
+            .iter()
+            .copied()
+            .filter(|id| *id != skip)
+            .collect();
+        self.fanout_ids(&ids, line)
+    }
+
+    /// Deliver to an explicit id list (e.g. KICK before membership remove).
+    pub fn fanout_ids(&self, ids: &[ClientId], line: &str) -> FanoutStats {
+        let mut stats = FanoutStats {
+            attempted: ids.len(),
+            ..Default::default()
+        };
+        for id in ids {
+            match self.outboxes.get(id) {
+                None => stats.missing_outbox += 1,
+                Some(tx) => match tx.try_send(line.to_string()) {
+                    Ok(()) => stats.delivered += 1,
+                    Err(_) => stats.dropped += 1,
+                },
+            }
+        }
+        stats
     }
 
     /// Admit a new connection under `[limits]`, or return a rejection reason.
@@ -246,4 +303,53 @@ mod tests {
         assert!(ch.members.is_empty());
         assert!(!ch.is_op(3));
     }
+
+    #[tokio::test]
+    async fn fanout_only_channel_members() {
+        let cfg = Config::default();
+        let mut s = Shared::new(Arc::new(cfg), None);
+        let (tx1, mut rx1) = mpsc::channel::<String>(4);
+        let (tx2, mut rx2) = mpsc::channel::<String>(4);
+        let (tx3, mut rx3) = mpsc::channel::<String>(4);
+        s.register_outbox(1, tx1);
+        s.register_outbox(2, tx2);
+        s.register_outbox(3, tx3);
+        let mut ch = ChannelState::default();
+        ch.members.insert(1);
+        ch.members.insert(2);
+        s.channels.insert("#c".into(), ch);
+        let st = s.fanout_channel("#c", "LINE\r\n", 1);
+        assert_eq!(st.attempted, 1);
+        assert_eq!(st.delivered, 1);
+        assert!(rx1.try_recv().is_err());
+        assert_eq!(rx2.try_recv().unwrap(), "LINE\r\n");
+        assert!(rx3.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn fanout_slow_consumer_drops() {
+        let cfg = Config::default();
+        let mut s = Shared::new(Arc::new(cfg), None);
+        let (tx, mut rx) = mpsc::channel::<String>(1);
+        s.register_outbox(9, tx);
+        let mut ch = ChannelState::default();
+        ch.members.insert(9);
+        s.channels.insert("#c".into(), ch);
+        assert_eq!(s.fanout_channel("#c", "a\r\n", 0).delivered, 1);
+        let st = s.fanout_channel("#c", "b\r\n", 0);
+        assert_eq!(st.dropped, 1);
+        assert_eq!(rx.try_recv().unwrap(), "a\r\n");
+    }
+
+    #[tokio::test]
+    async fn fanout_ids_includes_explicit_victim() {
+        let cfg = Config::default();
+        let mut s = Shared::new(Arc::new(cfg), None);
+        let (tx, mut rx) = mpsc::channel::<String>(4);
+        s.register_outbox(5, tx);
+        let st = s.fanout_ids(&[5], "KICK\r\n");
+        assert_eq!(st.delivered, 1);
+        assert_eq!(rx.try_recv().unwrap(), "KICK\r\n");
+    }
+
 }

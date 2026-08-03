@@ -12,7 +12,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Mutex;
 use tracing::info;
 
-use crate::state::{BusMsg, Shared};
+use crate::state::Shared;
 use crate::VERSION;
 
 /// Caps advertised without per-cap conformance tests must stay empty (A1 / Doc #974).
@@ -129,6 +129,11 @@ where
         peer,
         conn_id,
     };
+    let (out_tx, mut out_rx) = tokio::sync::mpsc::channel::<String>(crate::state::OUTBOX_CAP);
+    {
+        let mut g = shared.lock().await;
+        g.register_outbox(conn_id, out_tx);
+    }
     let server_name = cfg.server.name.as_str();
     let flood_limit = cfg.limits.flood_lines_per_window;
     let flood_window = Duration::from_secs(cfg.limits.flood_window_secs.max(1));
@@ -139,8 +144,7 @@ where
     let reg_deadline = crate::admission::registration_deadline(&cfg);
     let idle_deadline = crate::admission::idle_deadline(&cfg);
 
-    // Byte-at-a-time line assembly (cancellation-safe across read timeouts).
-    let mut bus_rx = shared.lock().await.bus.subscribe();
+    // Byte-at-a-time line assembly; outbound via per-id outbox (H-07/H-08).
 
     writer
         .write_all(
@@ -179,41 +183,42 @@ where
     let has_accounts = !cfg.accounts.is_empty();
     let cap_list = advertised_caps(has_accounts);
 
-    // Poll bus with try_recv + timed reads (not tokio::select!) so llvm/tarpaulin
-    // can attribute protocol-route coverage inside the session loop.
+    // Event-driven select! between member outbox and timed reads (H-07/H-08).
+    // Coverage must not dictate production scheduling — prefer outbox (biased).
     loop {
-        loop {
-            match bus_rx.try_recv() {
-                Ok(msg) if msg.skip_conn != conn_id && channels.contains(&msg.target) => {
-                    let line = adapt_bus_line(&msg.line, &enabled_caps);
-                    writer.write_all(line.as_bytes()).await?;
-                    if let Some(n) = nick.as_deref() {
-                        if let Some(raw) =
-                            ircd_core::RawLine::parse(line.trim_end_matches(['\r', '\n']))
-                        {
-                            if raw.command_eq("KICK")
-                                && raw.params.get(1).map(|t| t.as_str()) == Some(n)
+        let b = tokio::select! {
+            biased;
+            maybe = out_rx.recv() => {
+                match maybe {
+                    None => return Ok(()),
+                    Some(raw_line) => {
+                        let line = adapt_bus_line(&raw_line, &enabled_caps);
+                        writer.write_all(line.as_bytes()).await?;
+                        if let Some(n) = nick.as_deref() {
+                            if let Some(raw) =
+                                ircd_core::RawLine::parse(line.trim_end_matches(['\r', '\n']))
                             {
-                                channels.remove(&msg.target);
+                                if raw.command_eq("KICK")
+                                    && raw.params.get(1).map(|t| t.as_str()) == Some(n)
+                                {
+                                    if let Some(chan) = raw.params.first() {
+                                        channels.remove(chan);
+                                    }
+                                }
                             }
                         }
+                        continue;
                     }
                 }
-                Ok(_) => {}
-                Err(tokio::sync::broadcast::error::TryRecvError::Empty) => break,
-                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => continue,
-                Err(tokio::sync::broadcast::error::TryRecvError::Closed) => return Ok(()),
             }
-        }
-
-        let read = tokio::time::timeout(Duration::from_millis(50), reader.read_u8()).await;
-        let b = match read {
-            Ok(Ok(b)) => b,
-            Ok(Err(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
-                break;
-            }
-            Ok(Err(e)) => return Err(e.into()),
-            Err(_) => {
+            read = tokio::time::timeout(Duration::from_millis(50), reader.read_u8()) => {
+                match read {
+                    Ok(Ok(b)) => b,
+                    Ok(Err(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                        break;
+                    }
+                    Ok(Err(e)) => return Err(e.into()),
+                    Err(_) => {
                 if !registered {
                     if let Some(limit) = reg_deadline {
                         if session_start.elapsed() >= limit {
@@ -233,7 +238,9 @@ where
                         break;
                     }
                 }
-                continue; // timed out — keep partial line_buf, drain bus
+                continue; // timed out — keep partial line_buf, poll outbox via select
+                    }
+                }
             }
         };
         if line_buf.len() >= max_line {
@@ -381,11 +388,7 @@ where
                             writer.write_all(line.as_bytes()).await?;
                             let g = shared.lock().await;
                             for chan in &channels {
-                                let _ = g.bus.send(BusMsg {
-                                    target: chan.clone(),
-                                    line: line.clone(),
-                                    skip_conn: conn_id,
-                                });
+                                let _ = g.fanout_channel(chan, &line, conn_id);
                             }
                         }
                     }
@@ -589,11 +592,7 @@ where
                         channels.insert(chan.to_string());
                         let join_line = format!(":{prefix} JOIN :{chan}\r\n");
                         writer.write_all(join_line.as_bytes()).await?;
-                        let _ = shared.lock().await.bus.send(BusMsg {
-                            target: chan.to_string(),
-                            line: join_line,
-                            skip_conn: conn_id,
-                        });
+                        let _ = shared.lock().await.fanout_channel(chan, &join_line, conn_id);
                         match &topic {
                             Some(t) => {
                                 writer.write_all(
@@ -730,11 +729,7 @@ where
                         if let Some(acc) = account.as_deref() {
                             line = prepend_tag(&line, "account", acc);
                         }
-                        let _ = shared.lock().await.bus.send(BusMsg {
-                            target: target.clone(),
-                            line,
-                            skip_conn: conn_id,
-                        });
+                        let _ = shared.lock().await.fanout_channel(target.as_str(), &line, conn_id);
                     }
                     continue;
                 }
@@ -759,8 +754,11 @@ where
                         continue;
                     }
                     channels.remove(chan);
+                    let line = format!(":{prefix} PART {chan}\r\n");
+                    writer.write_all(line.as_bytes()).await?;
                     {
                         let mut g = shared.lock().await;
+                        let _ = g.fanout_channel(chan.as_str(), &line, conn_id);
                         if let Some(ch) = g.channels.get_mut(chan) {
                             ch.remove_member(conn_id);
                             if ch.members.is_empty() {
@@ -768,13 +766,6 @@ where
                             }
                         }
                     }
-                    let line = format!(":{prefix} PART {chan}\r\n");
-                    writer.write_all(line.as_bytes()).await?;
-                    let _ = shared.lock().await.bus.send(BusMsg {
-                        target: chan.clone(),
-                        line,
-                        skip_conn: conn_id,
-                    });
                     continue;
                 }
 
@@ -844,11 +835,7 @@ where
                     }
                     let line = format!(":{prefix} TOPIC {chan} :{new_topic}\r\n");
                     writer.write_all(line.as_bytes()).await?;
-                    let _ = shared.lock().await.bus.send(BusMsg {
-                        target: chan.clone(),
-                        line,
-                        skip_conn: conn_id,
-                    });
+                    let _ = shared.lock().await.fanout_channel(chan.as_str(), &line, conn_id);
                     continue;
                 }
 
@@ -888,9 +875,26 @@ where
                         }
                         continue;
                     }
+                    let line = format!(":{prefix} KICK {chan} {target_nick} :{reason}\r\n");
+                    // Fanout to current members (incl. victim) before remove — H-07.
                     {
                         let mut g = shared.lock().await;
                         if let Some(tid) = target_id {
+                            let mut ids: Vec<u64> = g
+                                .channels
+                                .get(chan.as_str())
+                                .map(|c| {
+                                    c.members
+                                        .iter()
+                                        .copied()
+                                        .filter(|id| *id != conn_id)
+                                        .collect()
+                                })
+                                .unwrap_or_default();
+                            if !ids.contains(&tid) {
+                                ids.push(tid);
+                            }
+                            let _ = g.fanout_ids(&ids, &line);
                             if let Some(ch) = g.channels.get_mut(chan.as_str()) {
                                 ch.remove_member(tid);
                                 if ch.members.is_empty() {
@@ -899,14 +903,8 @@ where
                             }
                         }
                     }
-                    let line = format!(":{prefix} KICK {chan} {target_nick} :{reason}\r\n");
                     // Deliver to kicker too (standard).
                     writer.write_all(line.as_bytes()).await?;
-                    let _ = shared.lock().await.bus.send(BusMsg {
-                        target: chan.clone(),
-                        line,
-                        skip_conn: conn_id,
-                    });
                     continue;
                 }
 
@@ -1010,11 +1008,7 @@ where
                         };
                         let line = format!(":{prefix} MODE {target} {applied}{args}\r\n");
                         writer.write_all(line.as_bytes()).await?;
-                        let _ = shared.lock().await.bus.send(BusMsg {
-                            target: target.clone(),
-                            line,
-                            skip_conn: conn_id,
-                        });
+                        let _ = shared.lock().await.fanout_channel(target.as_str(), &line, conn_id);
                     }
                     continue;
                 }
@@ -1037,20 +1031,17 @@ where
         g.nicks.remove(&ascii_casefold(&n));
         g.id_to_nick.remove(&conn_id);
         for chan in &channels {
+            let user_s = user.as_deref().unwrap_or("user");
+            let line = format!(":{n}!{user_s}@dsc.local QUIT :Connection closed\r\n");
+            let _ = g.fanout_channel(chan, &line, conn_id);
             if let Some(ch) = g.channels.get_mut(chan) {
                 ch.remove_member(conn_id);
             }
-            let user_s = user.as_deref().unwrap_or("user");
-            let line = format!(":{n}!{user_s}@dsc.local QUIT :Connection closed\r\n");
-            let _ = g.bus.send(BusMsg {
-                target: chan.clone(),
-                line,
-                skip_conn: conn_id,
-            });
             if g.channels.get(chan).map(|c| c.members.is_empty()).unwrap_or(false) {
                 g.channels.remove(chan);
             }
         }
+        g.unregister_outbox(conn_id);
     }
 
     Ok(())
@@ -1071,6 +1062,7 @@ impl Drop for ConnRelease {
         let conn_id = self.conn_id;
         tokio::spawn(async move {
             let mut g = shared.lock().await;
+            g.unregister_outbox(conn_id);
             g.release(peer);
             if let Some(nick) = g.id_to_nick.remove(&conn_id) {
                 g.nicks.remove(&ascii_casefold(&nick));

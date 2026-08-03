@@ -1,48 +1,86 @@
-//! Criterion benches for channel name list + tag adapt (routing-adjacent).
+//! Criterion benches for member-targeted fanout (H-07/H-08).
+//!
+//! Reports delivery cost for 1 / 10 / 100 / 1000 recipients with bounded outboxes.
 
-use std::collections::HashSet;
 use std::sync::Arc;
+use std::time::Duration;
 
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use ircd::config::Config;
-use ircd::state::{ChannelState, Shared};
-use ircd_core::tags::adapt_bus_line;
+use ircd::state::{ChannelState, Shared, OUTBOX_CAP};
+use tokio::sync::mpsc;
 
-fn routing_hot_paths(c: &mut Criterion) {
+fn setup_channel(n: usize) -> (Shared, Vec<mpsc::Receiver<String>>) {
+    let mut s = Shared::new(Arc::new(Config::default()), None);
+    let mut rxs = Vec::with_capacity(n);
     let mut ch = ChannelState::default();
-    for i in 0..200 {
-        let nick = format!("user{i}");
-        if i % 10 == 0 {
-            ch.ops.insert(nick.clone());
-        }
-        ch.members.insert(nick);
+    for i in 1..=n as u64 {
+        let (tx, rx) = mpsc::channel::<String>(OUTBOX_CAP);
+        s.register_outbox(i, tx);
+        ch.members.insert(i);
+        rxs.push(rx);
     }
+    s.channels.insert("#bench".into(), ch);
+    (s, rxs)
+}
 
-    c.bench_function("names_prefixed_200", |b| {
-        b.iter(|| ch.names_prefixed());
+fn drain_all(rxs: &mut [mpsc::Receiver<String>]) {
+    for rx in rxs.iter_mut() {
+        while rx.try_recv().is_ok() {}
+    }
+}
+
+fn fanout_scaling(c: &mut Criterion) {
+    let mut group = c.benchmark_group("fanout_channel");
+    group.warm_up_time(Duration::from_millis(300));
+    group.measurement_time(Duration::from_secs(2));
+    let line = ":a!b@c PRIVMSG #bench :hello fanout\r\n";
+
+    for n in [1usize, 10, 100, 1000] {
+        group.throughput(Throughput::Elements(n as u64));
+        group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, &n| {
+            let (shared, mut rxs) = setup_channel(n);
+            b.iter(|| {
+                let st = shared.fanout_channel("#bench", line, 0);
+                assert_eq!(st.delivered, n);
+                drain_all(&mut rxs);
+            });
+        });
+    }
+    group.finish();
+
+    c.bench_function("fanout_slow_consumer_policy", |b| {
+        let mut s = Shared::new(Arc::new(Config::default()), None);
+        let (tx_fast, mut rx_fast) = mpsc::channel::<String>(64);
+        let (tx_slow, mut rx_slow) = mpsc::channel::<String>(1);
+        s.register_outbox(1, tx_fast);
+        s.register_outbox(2, tx_slow);
+        let mut ch = ChannelState::default();
+        ch.members.insert(1);
+        ch.members.insert(2);
+        s.channels.insert("#bench".into(), ch);
+        b.iter(|| {
+            while rx_slow.try_recv().is_ok() {}
+            while rx_fast.try_recv().is_ok() {}
+            let _ = s.fanout_channel("#bench", "fill\r\n", 0);
+            let st = s.fanout_channel("#bench", "probe\r\n", 0);
+            assert!(st.dropped >= 1 || st.delivered >= 1);
+            let _ = (st, &mut rx_fast, &mut rx_slow);
+        });
     });
 
-    let mut caps = HashSet::new();
-    caps.insert("message-tags".into());
-    caps.insert("server-time".into());
-    let line = "@msgid=dsc1;time=2026-01-01T00:00:00.000Z;account=alice :a!b@c PRIVMSG #x :hello world\r\n";
-
-    c.bench_function("adapt_bus_line_tagged", |b| {
-        b.iter(|| adapt_bus_line(line, &caps));
-    });
-
-    let cfg = Arc::new(Config::default());
-    let shared = Shared::new(cfg, None);
-    c.bench_function("bus_send_privmsg", |b| {
+    c.bench_function("legacy_bus_send", |b| {
+        let shared = Shared::new(Arc::new(Config::default()), None);
+        let line = line.to_string();
         b.iter(|| {
             let _ = shared.bus.send(ircd::BusMsg {
-                target: "#x".into(),
-                line: line.to_string(),
+                target: "#bench".into(),
+                line: line.clone(),
                 skip_conn: 0,
             });
         });
     });
 }
 
-criterion_group!(benches, routing_hot_paths);
+criterion_group!(benches, fanout_scaling);
 criterion_main!(benches);

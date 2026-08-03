@@ -77,7 +77,9 @@ E2E uses in-process duplex I/O (`tests/common/mod.rs`) so coverage attributes to
 
 ### 3. Coverage undercount from `tokio::select!` (`session`)
 
-**Symptom:** Tarpaulin reported session coverage far below real exercise of the read/bus loop (~89.99% overall stuck one line under the bar).
+**Symptom (historical):** Tarpaulin under-attributed `select!` branches. A6 temporarily used `try_recv`+timed reads; **B1 restored `select!`** for correct scheduling — keep e2e dense enough to hold ≥90%.
+
+**Symptom (was):** Tarpaulin reported session coverage far below real exercise of the read/bus loop (~89.99% overall stuck one line under the bar).
 
 **Cause:** `select!` branches are poorly attributed under LLVM coverage for this crate.
 
@@ -118,6 +120,19 @@ cargo test -p ircd --test gate_a_acceptance_e2e
 | `a12_part_nonmember_442` | A12 |
 
 Must stay green on NewDev before public zero1 bind (with Tasks #2210 / #2193). Also re-run the tarpaulin command in §Coverage after Gate A landings.
+
+
+
+## Gate B — member-targeted routing (B1)
+
+Channel fanout uses per-`ClientId` bounded outboxes (`OUTBOX_CAP=64`, `try_send` drop on slow consumers), not broadcast-to-all-subscribers. Session loop is event-driven `tokio::select!` (outbox preferred).
+
+```bash
+cargo test -p ircd --test protocol_b1_e2e
+cargo bench -p ircd --bench routing_bench
+```
+
+Honest fanout sizes: **1 / 10 / 100 / 1000** recipients (`fanout_channel/*`). Snapshot (NewDev, 2026-08-02): ~168 ns / 1.37 µs / 14.1 µs / 172 µs; slow-consumer policy ~486 ns; legacy `bus.send` ~48 ns (not member-accurate).
 
 ## Tasks trail
 
