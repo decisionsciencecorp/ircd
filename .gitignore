@@ -13,3 +13,7 @@
 /fuzz/artifacts/
 /fuzz/coverage/
 /fuzz/target/
+
+# local history DB (tests/soak)
+data/history.sqlite3*
+data/*.sqlite3*
