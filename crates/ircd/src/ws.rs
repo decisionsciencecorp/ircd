@@ -14,6 +14,7 @@ use tracing::warn;
 use crate::admission;
 use crate::session;
 use crate::state::Shared;
+use crate::ws_lines::normalize_ws_irc_lines;
 use crate::ws_policy::{origin_allowed, subprotocol_acceptable};
 
 /// Run IRC session over an already-accepted WebSocket (plain or after TLS).
@@ -43,11 +44,7 @@ where
                     if text.len() > 64 * 1024 {
                         return;
                     }
-                    for part in text.split('\n') {
-                        let line = part.trim_end_matches('\r');
-                        if line.is_empty() {
-                            continue;
-                        }
+                    for line in normalize_ws_irc_lines(&text) {
                         if line.len() > 8192 {
                             return;
                         }
@@ -60,10 +57,12 @@ where
                 }
                 Ok(Message::Binary(bin)) => {
                     if let Ok(text) = std::str::from_utf8(&bin) {
-                        for part in text.split('\n') {
-                            let line = part.trim_end_matches('\r');
-                            if line.is_empty() {
-                                continue;
+                        if text.len() > 64 * 1024 {
+                            return;
+                        }
+                        for line in normalize_ws_irc_lines(text) {
+                            if line.len() > 8192 {
+                                return;
                             }
                             let mut out = line.to_string();
                             out.push_str("\r\n");

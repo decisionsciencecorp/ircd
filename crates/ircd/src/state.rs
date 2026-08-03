@@ -234,7 +234,7 @@ pub struct Shared {
     channels: HashMap<String, ChannelState>,
     /// Legacy broadcast retained for microbench comparison only — sessions use outboxes.
     bus: broadcast::Sender<BusMsg>,
-    outboxes: HashMap<ClientId, mpsc::Sender<String>>,
+    outboxes: HashMap<ClientId, mpsc::Sender<std::sync::Arc<str>>>,
     config: Arc<Config>,
     history: Option<Arc<HistoryStore>>,
     ip_counts: HashMap<String, usize>,
@@ -391,10 +391,33 @@ impl Shared {
     }
 
     /// Clone outbox senders for `ids` so callers can `try_send` after dropping the lock (C10).
-    pub fn clone_outboxes_for(&self, ids: &[ClientId]) -> Vec<mpsc::Sender<String>> {
+    pub fn clone_outboxes_for(
+        &self,
+        ids: &[ClientId],
+    ) -> Vec<mpsc::Sender<std::sync::Arc<str>>> {
         ids.iter()
             .filter_map(|id| self.outboxes.get(id).cloned())
             .collect()
+    }
+
+    /// Deliver to an explicit id list (e.g. KICK before membership remove).
+    /// Allocates the payload **once** as `Arc<str>` and clones the handle (C11).
+    pub fn fanout_ids(&self, ids: &[ClientId], line: &str) -> FanoutStats {
+        let payload: std::sync::Arc<str> = std::sync::Arc::from(line);
+        let mut stats = FanoutStats {
+            attempted: ids.len(),
+            ..Default::default()
+        };
+        for id in ids {
+            match self.outboxes.get(id) {
+                None => stats.missing_outbox += 1,
+                Some(tx) => match tx.try_send(std::sync::Arc::clone(&payload)) {
+                    Ok(()) => stats.delivered += 1,
+                    Err(_) => stats.dropped += 1,
+                },
+            }
+        }
+        stats
     }
 
     /// WHO/list helpers: (display_nick, ClientId) for all registered nicks.
@@ -461,7 +484,7 @@ impl Shared {
             .collect()
     }
 
-    pub fn register_outbox(&mut self, id: ClientId, tx: mpsc::Sender<String>) {
+    pub fn register_outbox(&mut self, id: ClientId, tx: mpsc::Sender<std::sync::Arc<str>>) {
         self.outboxes.insert(id, tx);
     }
 
@@ -482,24 +505,6 @@ impl Shared {
             .filter(|id| *id != skip)
             .collect();
         self.fanout_ids(&ids, line)
-    }
-
-    /// Deliver to an explicit id list (e.g. KICK before membership remove).
-    pub fn fanout_ids(&self, ids: &[ClientId], line: &str) -> FanoutStats {
-        let mut stats = FanoutStats {
-            attempted: ids.len(),
-            ..Default::default()
-        };
-        for id in ids {
-            match self.outboxes.get(id) {
-                None => stats.missing_outbox += 1,
-                Some(tx) => match tx.try_send(line.to_string()) {
-                    Ok(()) => stats.delivered += 1,
-                    Err(_) => stats.dropped += 1,
-                },
-            }
-        }
-        stats
     }
 
     /// Admit a new connection under `[limits]`, or return a rejection reason.
@@ -634,9 +639,9 @@ mod tests {
     async fn fanout_only_channel_members() {
         let cfg = Config::default();
         let mut s = Shared::new(Arc::new(cfg), None);
-        let (tx1, mut rx1) = mpsc::channel::<String>(4);
-        let (tx2, mut rx2) = mpsc::channel::<String>(4);
-        let (tx3, mut rx3) = mpsc::channel::<String>(4);
+        let (tx1, mut rx1) = mpsc::channel::<std::sync::Arc<str>>(4);
+        let (tx2, mut rx2) = mpsc::channel::<std::sync::Arc<str>>(4);
+        let (tx3, mut rx3) = mpsc::channel::<std::sync::Arc<str>>(4);
         s.register_outbox(1, tx1);
         s.register_outbox(2, tx2);
         s.register_outbox(3, tx3);
@@ -647,7 +652,7 @@ mod tests {
         assert_eq!(st.attempted, 1);
         assert_eq!(st.delivered, 1);
         assert!(rx1.try_recv().is_err());
-        assert_eq!(rx2.try_recv().unwrap(), "LINE\r\n");
+        assert_eq!(&*rx2.try_recv().unwrap(), "LINE\r\n");
         assert!(rx3.try_recv().is_err());
     }
 
@@ -655,27 +660,69 @@ mod tests {
     async fn fanout_slow_consumer_drops() {
         let cfg = Config::default();
         let mut s = Shared::new(Arc::new(cfg), None);
-        let (tx, mut rx) = mpsc::channel::<String>(1);
+        let (tx, mut rx) = mpsc::channel::<std::sync::Arc<str>>(1);
         s.register_outbox(9, tx);
         s.channel_or_default("#c".into()).members.insert(9);
         assert_eq!(s.fanout_channel("#c", "a\r\n", 0).delivered, 1);
         let st = s.fanout_channel("#c", "b\r\n", 0);
         assert_eq!(st.dropped, 1);
-        assert_eq!(rx.try_recv().unwrap(), "a\r\n");
+        assert_eq!(&*rx.try_recv().unwrap(), "a\r\n");
     }
 
     #[tokio::test]
     async fn fanout_ids_includes_explicit_victim() {
         let cfg = Config::default();
         let mut s = Shared::new(Arc::new(cfg), None);
-        let (tx, mut rx) = mpsc::channel::<String>(4);
+        let (tx, mut rx) = mpsc::channel::<std::sync::Arc<str>>(4);
         s.register_outbox(5, tx);
         let st = s.fanout_ids(&[5], "KICK\r\n");
         assert_eq!(st.delivered, 1);
-        assert_eq!(rx.try_recv().unwrap(), "KICK\r\n");
+        assert_eq!(&*rx.try_recv().unwrap(), "KICK\r\n");
         let st = s.fanout_ids(&[5, 99], "X\r\n");
         assert_eq!(st.missing_outbox, 1);
         assert_eq!(st.delivered, 1);
+    }
+
+    #[tokio::test]
+    async fn fanout_ids_shares_one_arc_across_recipients() {
+        // C11: one Arc payload, N cheap clones (strong_count == N while held).
+        let cfg = Config::default();
+        let mut s = Shared::new(Arc::new(cfg), None);
+        let mut rxs = Vec::new();
+        for id in 1..=8u64 {
+            let (tx, rx) = mpsc::channel::<std::sync::Arc<str>>(4);
+            s.register_outbox(id, tx);
+            rxs.push(rx);
+        }
+        let st = s.fanout_ids(&[1, 2, 3, 4, 5, 6, 7, 8], "SHARED\r\n");
+        assert_eq!(st.delivered, 8);
+        let first = rxs[0].try_recv().unwrap();
+        assert_eq!(&*first, "SHARED\r\n");
+        assert!(
+            std::sync::Arc::strong_count(&first) >= 8,
+            "expected shared Arc across recipients, strong_count={}",
+            std::sync::Arc::strong_count(&first)
+        );
+        for rx in rxs.iter_mut().skip(1) {
+            let got = rx.try_recv().unwrap();
+            assert!(std::sync::Arc::ptr_eq(&first, &got));
+        }
+    }
+
+    #[test]
+    fn names_snapshot_from_sets_covers_ops_and_plain() {
+        let mut members = HashSet::new();
+        members.insert(1);
+        members.insert(2);
+        let mut ops = HashSet::new();
+        ops.insert(2);
+        let mut map = HashMap::new();
+        map.insert(1, "alice".into());
+        map.insert(2, "bob".into());
+        let snap = NamesSnapshot::from_sets(&members, &ops, &map);
+        let s = snap.format_prefixed();
+        assert!(s.contains("alice"));
+        assert!(s.contains("@bob"));
     }
 
     #[test]
@@ -705,8 +752,9 @@ mod tests {
         let senders = s.clone_outboxes_for(&[7, 99]);
         assert_eq!(senders.len(), 1);
         drop(s); // lock released before send
-        senders[0].try_send("KICK\r\n".into()).unwrap();
-        assert_eq!(rx.try_recv().unwrap(), "KICK\r\n");
+        let payload: std::sync::Arc<str> = std::sync::Arc::from("KICK\r\n");
+        senders[0].try_send(payload).unwrap();
+        assert_eq!(&*rx.try_recv().unwrap(), "KICK\r\n");
     }
 
     #[test]

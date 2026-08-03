@@ -11,7 +11,7 @@ use ircd_core::{
     ascii_casefold, field_has_control, numeric, server_notice, valid_channel_name, Command, Nick,
     RawLine,
 };
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::sync::Mutex;
 use tracing::info;
 
@@ -20,80 +20,14 @@ use crate::state::Shared;
 use crate::VERSION;
 
 mod cap;
+mod io;
+mod message;
 mod register;
 
 use cap::{advertised_caps, handle_authenticate, handle_cap, has_cap, SaslState};
+use io::{read_line_outcome, session_deadline_at, sleep_until_deadline, IoEvent, LineOutcome};
+use message::relay_client_tags;
 use register::try_register;
-
-/// Result of one cancel-safe buffered line read attempt (C9).
-enum LineOutcome {
-    Complete,
-    Oversized,
-    Eof,
-}
-
-/// `select!` arm tag — logic runs *outside* the macro so llvm/tarpaulin sees it (C9).
-enum IoEvent {
-    Outbox(Option<String>),
-    Read(std::io::Result<LineOutcome>),
-    Deadline,
-}
-
-async fn read_line_outcome<R: tokio::io::AsyncBufRead + Unpin>(
-    reader: &mut R,
-    line_buf: &mut Vec<u8>,
-    max_line: usize,
-) -> std::io::Result<LineOutcome> {
-    loop {
-        if line_buf.len() >= max_line {
-            return Ok(LineOutcome::Oversized);
-        }
-        let buf = reader.fill_buf().await?;
-        if buf.is_empty() {
-            return Ok(LineOutcome::Eof);
-        }
-        let room = max_line - line_buf.len();
-        let chunk_len = buf.len().min(room);
-        if let Some(pos) = buf[..chunk_len].iter().position(|&b| b == b'\n') {
-            let take = pos + 1;
-            line_buf.extend_from_slice(&buf[..take]);
-            reader.consume(take);
-            return Ok(LineOutcome::Complete);
-        }
-        line_buf.extend_from_slice(&buf[..chunk_len]);
-        reader.consume(chunk_len);
-        if line_buf.len() >= max_line {
-            return Ok(LineOutcome::Oversized);
-        }
-        // Partial line in buffer; loop for more (cancel-safe across select!).
-    }
-}
-
-async fn sleep_until_deadline(deadline_at: Option<Instant>) {
-    match deadline_at {
-        Some(at) => {
-            let now = Instant::now();
-            if at > now {
-                tokio::time::sleep(at.saturating_duration_since(now)).await;
-            }
-        }
-        None => std::future::pending::<()>().await,
-    }
-}
-
-fn session_deadline_at(
-    registered: bool,
-    session_start: Instant,
-    last_activity: Instant,
-    reg_deadline: Option<Duration>,
-    idle_deadline: Option<Duration>,
-) -> Option<Instant> {
-    if !registered {
-        reg_deadline.map(|d| session_start + d)
-    } else {
-        idle_deadline.map(|d| last_activity + d)
-    }
-}
 
 pub async fn handle_client<R, W>(
     reader: R,
@@ -127,7 +61,8 @@ where
         peer,
         conn_id,
     };
-    let (out_tx, mut out_rx) = tokio::sync::mpsc::channel::<String>(crate::state::OUTBOX_CAP);
+    let (out_tx, mut out_rx) =
+        tokio::sync::mpsc::channel::<std::sync::Arc<str>>(crate::state::OUTBOX_CAP);
     {
         let mut g = shared.lock().await;
         g.register_outbox(conn_id, out_tx);
@@ -211,7 +146,7 @@ where
             match event {
                 IoEvent::Outbox(None) => return Ok(()),
                 IoEvent::Outbox(Some(raw_line)) => {
-                    let line = adapt_bus_line(&raw_line, &enabled_caps);
+                    let line = adapt_bus_line(raw_line.as_ref(), &enabled_caps);
                     writer.write_all(line.as_bytes()).await?;
                     if let Some(n) = nick.as_deref() {
                         if let Some(raw) =
@@ -317,6 +252,11 @@ where
                         cap_negotiating,
                         cfg.server.max_nick_length,
                         cfg.server.max_channel_length,
+                        if has_history {
+                            Some(register::CHATHISTORY_ISUPPORT_MAX)
+                        } else {
+                            None
+                        },
                     )
                     .await?;
                 }
@@ -419,9 +359,14 @@ where
                         let user_s = user.as_deref().unwrap_or("user");
                         let line = format!(":{old}!{user_s}@dsc.local NICK :{desired}\r\n");
                         writer.write_all(line.as_bytes()).await?;
+                        let payload: std::sync::Arc<str> = std::sync::Arc::from(line.as_str());
                         let g = shared.lock().await;
                         for chan in &channels {
-                            let _ = g.fanout_channel(chan, &line, conn_id);
+                            let ids = g.channel_member_ids(chan, conn_id);
+                            let senders = g.clone_outboxes_for(&ids);
+                            for tx in senders {
+                                let _ = tx.try_send(std::sync::Arc::clone(&payload));
+                            }
                         }
                     }
                 }
@@ -436,6 +381,11 @@ where
                     cap_negotiating,
                     cfg.server.max_nick_length,
                     cfg.server.max_channel_length,
+                    if has_history {
+                        Some(register::CHATHISTORY_ISUPPORT_MAX)
+                    } else {
+                        None
+                    },
                 )
                 .await?;
                 continue;
@@ -493,6 +443,11 @@ where
                     cap_negotiating,
                     cfg.server.max_nick_length,
                     cfg.server.max_channel_length,
+                    if has_history {
+                        Some(register::CHATHISTORY_ISUPPORT_MAX)
+                    } else {
+                        None
+                    },
                 )
                 .await?;
                 continue;
@@ -530,11 +485,16 @@ where
                 // Announce to channels + ERROR before close so irctest can sync-PING.
                 if let Some(n) = nick.as_deref() {
                     let mut g = shared.lock().await;
+                    let user_s = user.as_deref().unwrap_or("user");
+                    let why = quit_reason.as_deref().unwrap_or("Client Quit");
+                    let line = format!(":{n}!{user_s}@dsc.local QUIT :{why}\r\n");
+                    let payload: std::sync::Arc<str> = std::sync::Arc::from(line.as_str());
                     for chan in &channels {
-                        let user_s = user.as_deref().unwrap_or("user");
-                        let why = quit_reason.as_deref().unwrap_or("Client Quit");
-                        let line = format!(":{n}!{user_s}@dsc.local QUIT :{why}\r\n");
-                        let _ = g.fanout_channel(chan, &line, conn_id);
+                        let ids = g.channel_member_ids(chan, conn_id);
+                        let senders = g.clone_outboxes_for(&ids);
+                        for tx in senders {
+                            let _ = tx.try_send(std::sync::Arc::clone(&payload));
+                        }
                         if let Some(ch) = g.channel_mut(chan) {
                             ch.remove_member(conn_id);
                         }
@@ -1079,6 +1039,7 @@ where
                             if let Some(acc) = account.as_deref() {
                                 line = prepend_tag(&line, "account", acc);
                             }
+                            line = relay_client_tags(line, &msg, &enabled_caps);
                             let _ =
                                 shared
                                     .lock()
@@ -1103,13 +1064,103 @@ where
                                     .await?;
                                 continue;
                             };
-                            let mut line = format!(
-                                ":{prefix} PRIVMSG {target} :{text}
-"
-                            );
+                            let mut line = format!(":{prefix} PRIVMSG {target} :{text}\r\n");
                             if let Some(acc) = account.as_deref() {
                                 line = prepend_tag(&line, "account", acc);
                             }
+                            line = relay_client_tags(line, &msg, &enabled_caps);
+                            let _ = shared.lock().await.fanout_ids(&[tid], &line);
+                        }
+                        continue;
+                    }
+
+                    Command::Tagmsg { .. } => {
+                        if !has_cap(&enabled_caps, "message-tags") {
+                            writer
+                                .write_all(
+                                    numeric(
+                                        server_name,
+                                        421,
+                                        nick_s,
+                                        &["TAGMSG", "Unknown command"],
+                                    )
+                                    .as_bytes(),
+                                )
+                                .await?;
+                            continue;
+                        }
+                        let Some(target) = msg.params.first() else {
+                            writer
+                                .write_all(
+                                    numeric(
+                                        server_name,
+                                        461,
+                                        nick_s,
+                                        &["TAGMSG", "Not enough parameters"],
+                                    )
+                                    .as_bytes(),
+                                )
+                                .await?;
+                            continue;
+                        };
+                        let text = msg.params.get(1).map(String::as_str).unwrap_or("");
+                        if target.starts_with('#') {
+                            let allowed = {
+                                let g = shared.lock().await;
+                                match g.channel(target.as_str()) {
+                                    Some(ch) if ch.members.contains(&conn_id) => true,
+                                    Some(ch) if !ch.mode_n => true,
+                                    _ => false,
+                                }
+                            };
+                            if !allowed {
+                                writer
+                                    .write_all(
+                                        numeric(
+                                            server_name,
+                                            404,
+                                            nick_s,
+                                            &[target.as_str(), "Cannot send to channel"],
+                                        )
+                                        .as_bytes(),
+                                    )
+                                    .await?;
+                                continue;
+                            }
+                            let mut line = format!(":{prefix} TAGMSG {target} :{text}\r\n");
+                            if let Some(acc) = account.as_deref() {
+                                line = prepend_tag(&line, "account", acc);
+                            }
+                            line = relay_client_tags(line, &msg, &enabled_caps);
+                            let _ = shared.lock().await.fanout_channel(
+                                target.as_str(),
+                                &line,
+                                conn_id,
+                            );
+                        } else {
+                            let tid = {
+                                let g = shared.lock().await;
+                                g.nick_id(&ascii_casefold(target))
+                            };
+                            let Some(tid) = tid else {
+                                writer
+                                    .write_all(
+                                        numeric(
+                                            server_name,
+                                            401,
+                                            nick_s,
+                                            &[target.as_str(), "No such nick/channel"],
+                                        )
+                                        .as_bytes(),
+                                    )
+                                    .await?;
+                                continue;
+                            };
+                            let mut line = format!(":{prefix} TAGMSG {target} :{text}\r\n");
+                            if let Some(acc) = account.as_deref() {
+                                line = prepend_tag(&line, "account", acc);
+                            }
+                            line = relay_client_tags(line, &msg, &enabled_caps);
                             let _ = shared.lock().await.fanout_ids(&[tid], &line);
                         }
                         continue;
@@ -1372,8 +1423,9 @@ where
                                 let g = shared.lock().await;
                                 g.clone_outboxes_for(&ids)
                             };
+                            let payload: std::sync::Arc<str> = std::sync::Arc::from(line.as_str());
                             for tx in senders {
-                                let _ = tx.try_send(line.clone());
+                                let _ = tx.try_send(std::sync::Arc::clone(&payload));
                             }
                             {
                                 let mut g = shared.lock().await;
@@ -1704,7 +1756,8 @@ where
                                 }
                             };
                             if allowed {
-                                let line = format!(":{prefix} NOTICE {target} :{text}\r\n");
+                                let mut line = format!(":{prefix} NOTICE {target} :{text}\r\n");
+                                line = relay_client_tags(line, &msg, &enabled_caps);
                                 let _ = shared.lock().await.fanout_channel(
                                     target.as_str(),
                                     &line,
@@ -1717,7 +1770,8 @@ where
                                 g.nick_id(&ascii_casefold(target))
                             };
                             if let Some(tid) = tid {
-                                let line = format!(":{prefix} NOTICE {target} :{text}\r\n");
+                                let mut line = format!(":{prefix} NOTICE {target} :{text}\r\n");
+                                line = relay_client_tags(line, &msg, &enabled_caps);
                                 let _ = shared.lock().await.fanout_ids(&[tid], &line);
                             }
                         }
@@ -2090,11 +2144,16 @@ where
         let mut g = shared.lock().await;
         let _ = g.clear_nick(conn_id);
         if !quit_announced {
+            let user_s = user.as_deref().unwrap_or("user");
+            let reason = quit_reason.as_deref().unwrap_or("Connection closed");
+            let line = format!(":{n}!{user_s}@dsc.local QUIT :{reason}\r\n");
+            let payload: std::sync::Arc<str> = std::sync::Arc::from(line.as_str());
             for chan in &channels {
-                let user_s = user.as_deref().unwrap_or("user");
-                let reason = quit_reason.as_deref().unwrap_or("Connection closed");
-                let line = format!(":{n}!{user_s}@dsc.local QUIT :{reason}\r\n");
-                let _ = g.fanout_channel(chan, &line, conn_id);
+                let ids = g.channel_member_ids(chan, conn_id);
+                let senders = g.clone_outboxes_for(&ids);
+                for tx in senders {
+                    let _ = tx.try_send(std::sync::Arc::clone(&payload));
+                }
                 if let Some(ch) = g.channel_mut(chan) {
                     ch.remove_member(conn_id);
                 }

@@ -44,6 +44,11 @@ pub enum Command {
         target: Option<String>,
         text: Option<String>,
     },
+    /// IRCv3 TAGMSG — requires `message-tags` (C7).
+    Tagmsg {
+        target: Option<String>,
+        text: Option<String>,
+    },
     Topic {
         channel: Option<String>,
         topic: Option<String>,
@@ -119,6 +124,10 @@ impl Command {
                 target: at(0),
                 text: at(1),
             },
+            "TAGMSG" => Self::Tagmsg {
+                target: at(0),
+                text: at(1),
+            },
             "TOPIC" => Self::Topic {
                 channel: at(0),
                 topic: at(1),
@@ -170,6 +179,7 @@ impl Command {
             Self::Part { .. } => "PART",
             Self::Privmsg { .. } => "PRIVMSG",
             Self::Notice { .. } => "NOTICE",
+            Self::Tagmsg { .. } => "TAGMSG",
             Self::Topic { .. } => "TOPIC",
             Self::Kick { .. } => "KICK",
             Self::Mode { .. } => "MODE",
@@ -219,7 +229,7 @@ impl Command {
             | Self::Invite { .. }
             | Self::Names { .. }
             | Self::List { .. } => "channel",
-            Self::Privmsg { .. } | Self::Notice { .. } => "message",
+            Self::Privmsg { .. } | Self::Notice { .. } | Self::Tagmsg { .. } => "message",
             Self::Who { .. } | Self::Whois { .. } => "query",
             Self::Chathistory { .. } => "history",
             Self::Unknown { .. } => "unknown",
@@ -297,6 +307,7 @@ mod tests {
             ("PART #x :r", "PART"),
             ("PRIVMSG #x :m", "PRIVMSG"),
             ("NOTICE n :m", "NOTICE"),
+            ("TAGMSG #x :", "TAGMSG"),
             ("TOPIC #x :t", "TOPIC"),
             ("KICK #x n :r", "KICK"),
             ("MODE #x", "MODE"),

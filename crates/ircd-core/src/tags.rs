@@ -45,7 +45,44 @@ fn has_cap(caps: &HashSet<String>, name: &str) -> bool {
         .any(|c| c.split('=').next().unwrap_or(c).eq_ignore_ascii_case(name))
 }
 
+/// Extract client-only tag parts (`+key` / `+key=value`) from a tag string.
+///
+/// Used to relay `@+…` tags on PRIVMSG/NOTICE/TAGMSG when `message-tags` is on.
+pub fn client_only_tag_payload(tags: Option<&str>) -> Option<String> {
+    let tags = tags?;
+    let mut keep = Vec::new();
+    for part in tags.split(';') {
+        if part.is_empty() {
+            continue;
+        }
+        let key = part.split('=').next().unwrap_or(part);
+        if key.starts_with('+') {
+            keep.push(part);
+        }
+    }
+    if keep.is_empty() {
+        None
+    } else {
+        Some(keep.join(";"))
+    }
+}
+
+/// Prepend a raw tag block (`k=v;k2=v2`, no leading `@`) onto an IRC line.
+pub fn prepend_tag_block(line: &str, tag_block: &str) -> String {
+    let line = line.trim_end_matches(['\r', '\n']);
+    if tag_block.is_empty() {
+        return ensure_crlf(line);
+    }
+    if let Some(rest) = line.strip_prefix('@') {
+        format!("@{tag_block};{rest}\r\n")
+    } else {
+        format!("@{tag_block} {line}\r\n")
+    }
+}
+
 /// Adapt a (possibly tagged) bus line to the client's negotiated caps.
+///
+/// Untagged lines with no `server-time` cap return immediately (C14 cheap path).
 ///
 /// ```
 /// use std::collections::HashSet;
@@ -80,6 +117,7 @@ pub fn adapt_bus_line(line: &str, caps: &HashSet<String>) -> String {
         } else if part.starts_with("account=") {
             want_account || want_msg
         } else {
+            // Client-only (`+…`) and other tags require message-tags.
             want_msg
         };
         if retain {
@@ -273,6 +311,38 @@ mod tests {
         caps.insert("server-time".into());
         let out = adapt_bus_line("@msgid=1 :x PRIVMSG #c :h\r\n", &caps);
         assert_eq!(out, ":x PRIVMSG #c :h\r\n");
+    }
+
+    #[test]
+    fn client_only_tag_payload_extracts_plus() {
+        assert_eq!(
+            client_only_tag_payload(Some("+draft/reply=abc;msgid=1")),
+            Some("+draft/reply=abc".into())
+        );
+        assert_eq!(client_only_tag_payload(Some("msgid=1")), None);
+        assert_eq!(client_only_tag_payload(None), None);
+    }
+
+    #[test]
+    fn prepend_tag_block_merges() {
+        let out = prepend_tag_block("@msgid=1 :x PRIVMSG #c :h", "+foo=bar");
+        assert!(out.starts_with("@+foo=bar;msgid=1 "));
+        let out2 = prepend_tag_block(":x PRIVMSG #c :h", "+foo=bar");
+        assert_eq!(out2, "@+foo=bar :x PRIVMSG #c :h\r\n");
+    }
+
+    #[test]
+    fn prepend_tag_block_empty_is_ensure_crlf() {
+        assert_eq!(prepend_tag_block("PING :x", ""), "PING :x\r\n");
+    }
+
+    #[test]
+    fn adapt_keeps_client_plus_tags_with_message_tags() {
+        let mut caps = HashSet::new();
+        caps.insert("message-tags".into());
+        let out = adapt_bus_line("@+foo=bar;msgid=1 :x PRIVMSG #c :h\r\n", &caps);
+        assert!(out.contains("+foo=bar"));
+        assert!(out.contains("msgid=1"));
     }
 
     #[test]

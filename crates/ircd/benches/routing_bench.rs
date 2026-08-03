@@ -10,12 +10,12 @@ use ircd::config::Config;
 use ircd::state::{ChannelState, Shared, OUTBOX_CAP};
 use tokio::sync::mpsc;
 
-fn setup_channel(n: usize) -> (Shared, Vec<mpsc::Receiver<String>>) {
+fn setup_channel(n: usize) -> (Shared, Vec<mpsc::Receiver<std::sync::Arc<str>>>) {
     let mut s = Shared::new(Arc::new(Config::default()), None);
     let mut rxs = Vec::with_capacity(n);
     let mut ch = ChannelState::default();
     for i in 1..=n as u64 {
-        let (tx, rx) = mpsc::channel::<String>(OUTBOX_CAP);
+        let (tx, rx) = mpsc::channel::<std::sync::Arc<str>>(OUTBOX_CAP);
         s.register_outbox(i, tx);
         ch.members.insert(i);
         rxs.push(rx);
@@ -24,7 +24,7 @@ fn setup_channel(n: usize) -> (Shared, Vec<mpsc::Receiver<String>>) {
     (s, rxs)
 }
 
-fn drain_all(rxs: &mut [mpsc::Receiver<String>]) {
+fn drain_all(rxs: &mut [mpsc::Receiver<std::sync::Arc<str>>]) {
     for rx in rxs.iter_mut() {
         while rx.try_recv().is_ok() {}
     }
@@ -51,8 +51,8 @@ fn fanout_scaling(c: &mut Criterion) {
 
     c.bench_function("fanout_slow_consumer_policy", |b| {
         let mut s = Shared::new(Arc::new(Config::default()), None);
-        let (tx_fast, mut rx_fast) = mpsc::channel::<String>(64);
-        let (tx_slow, mut rx_slow) = mpsc::channel::<String>(1);
+        let (tx_fast, mut rx_fast) = mpsc::channel::<std::sync::Arc<str>>(64);
+        let (tx_slow, mut rx_slow) = mpsc::channel::<std::sync::Arc<str>>(1);
         s.register_outbox(1, tx_fast);
         s.register_outbox(2, tx_slow);
         let mut ch = ChannelState::default();

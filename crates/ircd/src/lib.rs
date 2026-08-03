@@ -12,6 +12,7 @@ pub mod session;
 pub mod state;
 pub mod tls;
 pub mod ws;
+pub mod ws_lines;
 pub mod ws_policy;
 
 pub use config::Config;
