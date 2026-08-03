@@ -107,3 +107,44 @@ where
     info!(%nick, "client registered");
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::{AsyncBufReadExt, BufReader};
+
+    #[tokio::test]
+    async fn welcome_numerics_with_history_tokens() {
+        let (c, s) = tokio::io::duplex(8192);
+        let mut w = s;
+        let mut registered = false;
+        try_register(
+            &mut w,
+            "srv",
+            "line1\nline2",
+            &mut registered,
+            Some("nick"),
+            Some("user"),
+            Some("Real"),
+            false,
+            16,
+            50,
+            Some(200),
+        )
+        .await
+        .unwrap();
+        drop(w);
+        assert!(registered);
+        let mut body = String::new();
+        let mut r = BufReader::new(c);
+        let mut line = String::new();
+        while r.read_line(&mut line).await.unwrap() > 0 {
+            body.push_str(&line);
+            line.clear();
+        }
+        assert!(body.contains("001"));
+        assert!(body.contains("005"));
+        assert!(body.contains("CHATHISTORY"));
+        assert!(body.contains("376"));
+    }
+}

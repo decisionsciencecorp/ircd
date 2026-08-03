@@ -361,3 +361,167 @@ where
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{AccountSection, Config};
+    use crate::state::Shared;
+    use ircd_core::RawLine;
+    use tokio::io::{AsyncBufReadExt, BufReader};
+
+    #[test]
+    fn apply_cap_req_empty_and_disable() {
+        let adv = advertised_caps(true, true);
+        let mut enabled = HashSet::new();
+        let (ack, nak) = apply_cap_req("", &adv, &mut enabled);
+        assert!(ack.is_empty() && nak.is_empty());
+        let (ack, nak) = apply_cap_req("batch", &adv, &mut enabled);
+        assert!(ack.contains(&"batch".into()));
+        assert!(nak.is_empty());
+        let (ack, nak) = apply_cap_req("-batch", &adv, &mut enabled);
+        assert_eq!(ack, vec!["-batch".to_string()]);
+        assert!(nak.is_empty());
+        assert!(!has_cap(&enabled, "batch"));
+    }
+
+    #[tokio::test]
+    async fn authenticate_success_abort_total_limit() {
+        let cfg = Arc::new(Config::default());
+        let shared = Arc::new(Mutex::new(Shared::new(cfg, None)));
+        let accounts = [AccountSection {
+            name: "alice".into(),
+            password: "secret".into(),
+        }];
+        let mut caps = HashSet::new();
+        caps.insert("sasl".into());
+        let mut state = SaslState::Idle;
+        let mut account = None;
+
+        // Success path (900/903).
+        let (c, s) = tokio::io::duplex(4096);
+        let mut w = s;
+        let mut msg = RawLine::parse("AUTHENTICATE PLAIN").unwrap();
+        handle_authenticate(
+            &mut w,
+            "t",
+            &msg,
+            Some("n"),
+            Some("u"),
+            &accounts,
+            &caps,
+            &mut state,
+            &mut account,
+            &shared,
+            1,
+        )
+        .await
+        .unwrap();
+        msg = RawLine::parse("AUTHENTICATE AGFsaWNlAHNlY3JldA==").unwrap();
+        handle_authenticate(
+            &mut w,
+            "t",
+            &msg,
+            Some("n"),
+            Some("u"),
+            &accounts,
+            &caps,
+            &mut state,
+            &mut account,
+            &shared,
+            1,
+        )
+        .await
+        .unwrap();
+        drop(w);
+        let mut body = String::new();
+        let mut r = BufReader::new(c);
+        let mut line = String::new();
+        while r.read_line(&mut line).await.unwrap() > 0 {
+            body.push_str(&line);
+            line.clear();
+        }
+        assert!(body.contains("903"));
+        assert_eq!(account.as_deref(), Some("alice"));
+
+        // Idle abort via *
+        state = SaslState::Idle;
+        account = None;
+        let (c, s) = tokio::io::duplex(1024);
+        let mut w = s;
+        msg = RawLine::parse("AUTHENTICATE *").unwrap();
+        handle_authenticate(
+            &mut w,
+            "t",
+            &msg,
+            Some("n"),
+            Some("u"),
+            &accounts,
+            &caps,
+            &mut state,
+            &mut account,
+            &shared,
+            1,
+        )
+        .await
+        .unwrap();
+        drop(w);
+        let mut body = String::new();
+        let mut r = BufReader::new(c);
+        let mut line = String::new();
+        while r.read_line(&mut line).await.unwrap() > 0 {
+            body.push_str(&line);
+            line.clear();
+        }
+        assert!(body.contains("906"));
+
+        // Total buffer > SASL_TOTAL_MAX → 905
+        state = SaslState::Idle;
+        let (c, s) = tokio::io::duplex(2048);
+        let mut w = s;
+        msg = RawLine::parse("AUTHENTICATE PLAIN").unwrap();
+        handle_authenticate(
+            &mut w,
+            "t",
+            &msg,
+            Some("n"),
+            Some("u"),
+            &accounts,
+            &caps,
+            &mut state,
+            &mut account,
+            &shared,
+            1,
+        )
+        .await
+        .unwrap();
+        let chunk = "A".repeat(400);
+        for _ in 0..3 {
+            msg = RawLine::parse(&format!("AUTHENTICATE {chunk}")).unwrap();
+            handle_authenticate(
+                &mut w,
+                "t",
+                &msg,
+                Some("n"),
+                Some("u"),
+                &accounts,
+                &caps,
+                &mut state,
+                &mut account,
+                &shared,
+                1,
+            )
+            .await
+            .unwrap();
+        }
+        drop(w);
+        let mut body = String::new();
+        let mut r = BufReader::new(c);
+        let mut line = String::new();
+        while r.read_line(&mut line).await.unwrap() > 0 {
+            body.push_str(&line);
+            line.clear();
+        }
+        assert!(body.contains("905"), "total too long: {body}");
+    }
+}

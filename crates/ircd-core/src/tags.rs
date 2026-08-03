@@ -447,6 +447,14 @@ mod tests {
     }
 
     #[test]
+    fn tag_edges_unknown_escape_flag_keys_and_bad_value() {
+        assert_eq!(unescape_tag_value("a\\zb").unwrap(), "azb");
+        assert_eq!(validate_tag_block(Some("flag;+ok=1")), None);
+        assert_eq!(validate_tag_block(Some("x=trailing\\")), Some(417));
+        assert_eq!(escape_client_tag_block("+flag;k=v w"), "+flag;k=v\\sw");
+    }
+
+    #[test]
     fn adapt_keeps_client_plus_tags_with_message_tags() {
         let mut caps = HashSet::new();
         caps.insert("message-tags".into());
