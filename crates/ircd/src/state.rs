@@ -45,9 +45,83 @@ impl Default for ChannelState {
     }
 }
 
+/// Membership nick snapshot for NAMES — format off the global lock (H-16).
+#[derive(Debug, Clone)]
+pub struct NamesSnapshot {
+    /// (sort_key, display) — display includes `@` for ops.
+    entries: Vec<(String, String)>,
+}
+
+impl NamesSnapshot {
+    /// Single space-joined NAMES list (may exceed wire size — prefer `split_for_wire`).
+    pub fn from_sets(
+        members: &HashSet<ClientId>,
+        ops: &HashSet<ClientId>,
+        id_to_nick: &HashMap<ClientId, String>,
+    ) -> Self {
+        let mut entries: Vec<(String, String)> = members
+            .iter()
+            .filter_map(|id| {
+                let nick = id_to_nick.get(id)?;
+                let display = if ops.contains(id) {
+                    format!("@{nick}")
+                } else {
+                    nick.clone()
+                };
+                Some((nick.to_ascii_lowercase(), display))
+            })
+            .collect();
+        entries.sort_by(|a, b| a.0.cmp(&b.0));
+        Self { entries }
+    }
+
+    pub fn format_prefixed(&self) -> String {
+        self.entries
+            .iter()
+            .map(|(_, d)| d.as_str())
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// Split into trailing payloads that fit `max_payload_bytes` (353 `:names` body).
+    pub fn split_for_wire(&self, max_payload_bytes: usize) -> Vec<String> {
+        let max = max_payload_bytes.max(1);
+        let mut out = Vec::new();
+        let mut cur = String::new();
+        for (_, display) in &self.entries {
+            let need = if cur.is_empty() {
+                display.len()
+            } else {
+                cur.len() + 1 + display.len()
+            };
+            if !cur.is_empty() && need > max {
+                out.push(std::mem::take(&mut cur));
+                cur.push_str(display);
+            } else if cur.is_empty() {
+                cur.push_str(display);
+            } else {
+                cur.push(' ');
+                cur.push_str(display);
+            }
+            // Pathological single nick longer than max: emit alone.
+            if cur.len() > max && cur == *display {
+                out.push(std::mem::take(&mut cur));
+            }
+        }
+        if !cur.is_empty() {
+            out.push(cur);
+        }
+        if out.is_empty() {
+            out.push(String::new());
+        }
+        out
+    }
+}
+
 impl ChannelState {
-    pub fn names_prefixed(&self, id_to_nick: &HashMap<ClientId, String>) -> String {
-        let mut names: Vec<(String, String)> = self
+    /// Clone only member nick/ops needed for NAMES (cheap under lock).
+    pub fn names_snapshot(&self, id_to_nick: &HashMap<ClientId, String>) -> NamesSnapshot {
+        let mut entries: Vec<(String, String)> = self
             .members
             .iter()
             .filter_map(|id| {
@@ -60,12 +134,12 @@ impl ChannelState {
                 Some((nick.to_ascii_lowercase(), display))
             })
             .collect();
-        names.sort_by(|a, b| a.0.cmp(&b.0));
-        names
-            .into_iter()
-            .map(|(_, d)| d)
-            .collect::<Vec<_>>()
-            .join(" ")
+        entries.sort_by(|a, b| a.0.cmp(&b.0));
+        NamesSnapshot { entries }
+    }
+
+    pub fn names_prefixed(&self, id_to_nick: &HashMap<ClientId, String>) -> String {
+        self.names_snapshot(id_to_nick).format_prefixed()
     }
 
     pub fn mode_chars(&self) -> String {
@@ -350,6 +424,42 @@ mod tests {
         let st = s.fanout_ids(&[5], "KICK\r\n");
         assert_eq!(st.delivered, 1);
         assert_eq!(rx.try_recv().unwrap(), "KICK\r\n");
+    }
+
+
+    #[test]
+    fn names_snapshot_formats_off_channel() {
+        let mut ch = ChannelState::default();
+        ch.members.insert(1);
+        ch.members.insert(2);
+        ch.ops.insert(2);
+        let mut map: HashMap<ClientId, String> = HashMap::new();
+        map.insert(1, "alice".into());
+        map.insert(2, "bob".into());
+        let snap = ch.names_snapshot(&map);
+        assert_eq!(snap.format_prefixed(), "alice @bob");
+        let parts = snap.split_for_wire(8); // "alice" = 5, " @bob" needs more
+        let joined = parts.join(" ");
+        assert!(joined.contains("alice"));
+        assert!(joined.contains("@bob"));
+    }
+
+    #[test]
+    fn names_split_for_wire_chunks() {
+        let snap = NamesSnapshot {
+            entries: (0..20)
+                .map(|i| {
+                    let n = format!("u{i:02}");
+                    (n.clone(), n)
+                })
+                .collect(),
+        };
+        let parts = snap.split_for_wire(12);
+        assert!(parts.len() > 1);
+        for p in &parts {
+            assert!(p.len() <= 12, "chunk too long: {p:?}");
+        }
+        assert_eq!(parts.join(" ").split_whitespace().count(), 20);
     }
 
 }

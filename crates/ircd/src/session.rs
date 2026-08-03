@@ -549,30 +549,48 @@ where
                                 g.id_to_nick.insert(conn_id, n.clone());
                                 g.nicks.entry(ascii_casefold(n)).or_insert(conn_id);
                             }
-                            let id_nicks = g.id_to_nick.clone();
                             let exists = g.channels.contains_key(chan);
                             if !exists && g.channels.len() >= cfg.limits.max_channels {
                                 Err(405)
+                            } else if g
+                                .channels
+                                .get(chan)
+                                .map(|c| c.members.contains(&conn_id))
+                                .unwrap_or(false)
+                            {
+                                Ok(None)
                             } else {
-                                let ch = g.channels.entry(chan.to_string()).or_default();
-                                let already = ch.members.contains(&conn_id);
-                                if already {
-                                    Ok(None)
-                                } else if ch.members.len() >= cfg.limits.max_members_per_channel {
+                                let (topic, members, ops, over) = {
+                                    let ch = g.channels.entry(chan.to_string()).or_default();
+                                    if ch.members.len() >= cfg.limits.max_members_per_channel {
+                                        (None, Default::default(), Default::default(), true)
+                                    } else {
+                                        let first = ch.members.is_empty();
+                                        ch.members.insert(conn_id);
+                                        if first {
+                                            ch.ops.insert(conn_id);
+                                        }
+                                        (
+                                            ch.topic.clone(),
+                                            ch.members.clone(),
+                                            ch.ops.clone(),
+                                            false,
+                                        )
+                                    }
+                                };
+                                if over {
                                     Err(471)
                                 } else {
-                                    let first = ch.members.is_empty();
-                                    ch.members.insert(conn_id);
-                                    if first {
-                                        ch.ops.insert(conn_id);
-                                    }
-                                    let topic = ch.topic.clone();
-                                    let names = ch.names_prefixed(&id_nicks);
-                                    Ok(Some((names, topic)))
+                                    let snap = crate::state::NamesSnapshot::from_sets(
+                                        &members,
+                                        &ops,
+                                        &g.id_to_nick,
+                                    );
+                                    Ok(Some((snap, topic)))
                                 }
                             }
                         };
-                        let (names_list, topic) = match join_result {
+                        let (names_snap, topic) = match join_result {
                             Ok(None) => continue, // already a member
                             Ok(Some(pair)) => pair,
                             Err(405) => {
@@ -605,9 +623,17 @@ where
                                 ).await?;
                             }
                         }
-                        writer.write_all(
-                            numeric(server_name, 353, nick_s, &["=", chan, names_list.as_str()]).as_bytes(),
-                        ).await?;
+                        // Split 353 payloads to wire size (ties C2 / max_line_bytes).
+                        let overhead = server_name.len()
+                            + nick_s.len()
+                            + chan.len()
+                            + 24; // " 353  =  :\r\n" plus margins
+                        let max_payload = cfg.limits.max_line_bytes.saturating_sub(overhead).max(16);
+                        for chunk in names_snap.split_for_wire(max_payload) {
+                            writer.write_all(
+                                numeric(server_name, 353, nick_s, &["=", chan, chunk.as_str()]).as_bytes(),
+                            ).await?;
+                        }
                         writer.write_all(
                             numeric(server_name, 366, nick_s, &[chan, "End of /NAMES list"]).as_bytes(),
                         ).await?;

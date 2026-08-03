@@ -16,6 +16,6 @@ pub mod ws;
 pub use config::Config;
 pub use history::HistoryStore;
 pub use session::handle_client;
-pub use state::{BusMsg, ChannelState, Shared};
+pub use state::{BusMsg, ChannelState, ClientId, NamesSnapshot, Shared};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
