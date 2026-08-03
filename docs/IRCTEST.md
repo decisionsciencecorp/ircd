@@ -53,9 +53,9 @@ and not services and not implementation-specific
 | `testAway` / `testAwayAck` / `testAwayPrivmsg` / `testAwayWhois` | AWAY set/clear + 301 on PRIVMSG/WHOIS (F1a) |
 | `testAwayNotify` / `testAwayNotifyOnJoin` | IRCv3 `away-notify` peer + join (F1a) |
 
-**Not yet in `-k` (F1d):** `testAwayUserhost` (needs USERHOST). Empty-message edge cases may stay out until proven green.
+**F5 note (tip `6f88c38`):** USERHOST/ISON/TIME/INFO, message-tags 417, SASL edges, full CHATHISTORY, KILL/WALLOPS are defended by in-tree `protocol_f_slices_e2e`. Promote matching irctest modules into `-k` when individually green — WS harness remains UNSUPPORTED in the controller (daemon WS still PASS).
 
-**Advertised IRCv3 caps** (`cap-notify`, `message-tags`, `server-time`, `account-tag`, `batch`, plus conditional `sasl` / `draft/chathistory`) are **not** excluded with `-m 'not message-tags …'`. Full irctest modules for those caps are not yet in the curated `-k` list; wire conformance for advertised caps remains gated by in-tree **`protocol_c3_e2e`** (and Gate A A1: do not advertise without tests). Expand `-k` as individual irctest cases go green — never hide an advertised cap behind a marker exclusion.
+**Advertised IRCv3 caps** (`cap-notify`, `message-tags`, `server-time`, `account-tag`, `batch`, plus conditional `sasl` / `draft/chathistory`) are **not** excluded with `-m 'not message-tags …'`. Full irctest modules for those caps are not yet all in the curated `-k` list; wire conformance for advertised caps remains gated by in-tree **`protocol_c3_e2e`** / **`protocol_f_slices_e2e`** (and Gate A A1: do not advertise without tests). Expand `-k` as individual irctest cases go green — never hide an advertised cap behind a marker exclusion.
 
 ## Allowlist — intentionally unsupported (irctest)
 
@@ -64,7 +64,7 @@ Controllers raise `NotImplementedByController` (or omit optional behaviors) for 
 | Area | Status | Notes |
 |------|--------|-------|
 | WebSocket listeners | Unsupported in controller | Binary has WS; irctest websocket harness not wired |
-| Connection `PASS` / link password | Unsupported | No server-password gate in lab config |
+| Connection `PASS` / link password | Optional | Supported when `server.password` set (F1d); lab configs usually empty |
 | Services packages (Anope/Atheme) | Unsupported | No services controller; `-m 'not services'` |
 | STS | Unsupported | `supports_sts = False`; cap not advertised |
 | `multi-prefix`, `echo-message`, `account-notify`, `extended-join`, `labeled-response`, `setname`, `MONITOR`, … | Not advertised | Do not REQ in curated probes; NAK is correct if a client asks |

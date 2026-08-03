@@ -1005,20 +1005,6 @@ where
                     }
 
                     Command::Chathistory { .. } => {
-                        if !has_cap(&enabled_caps, "draft/chathistory") {
-                            writer
-                                .write_all(
-                                    numeric(
-                                        server_name,
-                                        421,
-                                        nick_s,
-                                        &["CHATHISTORY", "Unknown command"],
-                                    )
-                                    .as_bytes(),
-                                )
-                                .await?;
-                            continue;
-                        }
                         let Some((kind, target, limit)) = chathistory::parse_sub(&msg.params) else {
                             writer
                                 .write_all(
@@ -1048,6 +1034,8 @@ where
                                 .await?;
                             continue;
                         };
+                        // Verb is available when history is on (005 CHATHISTORY=).
+                        // Cap `draft/chathistory` only gates JOIN auto-replay suppress.
                         if chathistory::is_targets(&msg.params) {
                             let rows = store.targets_async(limit).await.unwrap_or_default();
                             // Only channels this client is on.
