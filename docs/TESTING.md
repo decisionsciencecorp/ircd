@@ -140,10 +140,10 @@ Honest fanout sizes: **1 / 10 / 100 / 1000** recipients (`fanout_channel/*`). Sn
 
 | Path | Status (2026-08-03) |
 |------|---------------------|
-| Terminal ( + ) | Green on NewDev against local plaintext listen |
-| Protocol duplex e2e () | Green |
-| Tauri / web IRC | **Stub** — client repo not in-tree yet; re-run when present |
-| Native Mac client | **Stub** — same; re-run when present |
+| Terminal (irssi + tools/c1_irssi_smoke.sh) | Green on NewDev against local plaintext listen |
+| Protocol duplex e2e (protocol_c1_e2e) | Green |
+| Tauri / web IRC | Stub — client repo not in-tree yet; re-run when present |
+| Native Mac client | Stub — same; re-run when present |
 
 Gaps filed: no automated Tauri/Mac harness until those clients exist. Server surface for queries is covered by C1 wire tests.
 
