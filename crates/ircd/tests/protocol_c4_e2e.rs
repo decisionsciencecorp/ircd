@@ -82,7 +82,7 @@ fn shared_nick_and_channel_invariants() {
     s.remove_nick_key(&ascii_casefold("Alicia"));
     let _ = s.clear_nick(id);
     assert_eq!(s.client_count(), 0);
-    assert!(s.config().server.name.len() > 0);
+    assert!(!s.config().server.name.is_empty());
     let entries = s.nick_entries();
     assert!(entries.is_empty());
 }

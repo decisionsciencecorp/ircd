@@ -147,4 +147,61 @@ mod tests {
         assert!(body.contains("CHATHISTORY"));
         assert!(body.contains("376"));
     }
+
+    #[tokio::test]
+    async fn try_register_early_returns() {
+        let (c, s) = tokio::io::duplex(1024);
+        let mut w = s;
+        let mut registered = true;
+        try_register(
+            &mut w,
+            "srv",
+            "m",
+            &mut registered,
+            Some("n"),
+            Some("u"),
+            None,
+            false,
+            16,
+            50,
+            None,
+        )
+        .await
+        .unwrap();
+        let mut registered = false;
+        try_register(
+            &mut w,
+            "srv",
+            "m",
+            &mut registered,
+            Some("n"),
+            Some("u"),
+            None,
+            true, // cap negotiating
+            16,
+            50,
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(!registered);
+        try_register(
+            &mut w,
+            "srv",
+            "m",
+            &mut registered,
+            None,
+            Some("u"),
+            None,
+            false,
+            16,
+            50,
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(!registered);
+        drop(w);
+        drop(c);
+    }
 }

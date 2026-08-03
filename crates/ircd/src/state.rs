@@ -938,7 +938,7 @@ mod tests {
         assert!(s.history_store().is_none());
         let _ = s.subscribe_bus();
         let _ = s.bus_sender();
-        assert_eq!(s.config().server.name.is_empty(), false);
+        assert!(!s.config().server.name.is_empty());
         s.set_nick(id, "Zed".into());
         assert!(s.has_nick_key(&ircd_core::ascii_casefold("Zed")));
         s.replace_nick(id, Some("Zed"), "Zoe".into());

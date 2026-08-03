@@ -237,9 +237,11 @@ async fn a8_casemap_and_cap_end() {
 
 #[test]
 fn a10_ws_origin_policy() {
-    let mut cfg = WebSocketSection::default();
-    cfg.allowed_origins = vec!["https://ok.test".into()];
-    cfg.require_irc_subprotocol = true;
+    let cfg = WebSocketSection {
+        allowed_origins: vec!["https://ok.test".into()],
+        require_irc_subprotocol: true,
+        ..Default::default()
+    };
     assert!(evaluate_ws_handshake(None, &["irc".into()], &cfg).is_ok());
     assert!(evaluate_ws_handshake(Some("https://evil"), &["irc".into()], &cfg).is_err());
     assert!(!origin_allowed(

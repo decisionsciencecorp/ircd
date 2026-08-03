@@ -235,4 +235,35 @@ mod tests {
         assert!(all.contains("CHATHISTORY TARGETS #lab"));
         assert!(all.contains("BATCH -chathist"));
     }
+
+    #[tokio::test]
+    async fn emit_history_without_batch_cap() {
+        let caps = HashSet::new();
+        let (client, server) = tokio::io::duplex(4096);
+        let mut writer = server;
+        let rows = [HistMsg {
+            id: 1,
+            channel: "#x".into(),
+            ts_ms: 1000,
+            prefix: "a!b@c".into(),
+            text: "z".into(),
+        }];
+        emit_history_batch(&mut writer, "srv", &rows, &caps)
+            .await
+            .unwrap();
+        emit_targets_batch(&mut writer, "srv", &[("#x".into(), 1, 1000)], &caps)
+            .await
+            .unwrap();
+        drop(writer);
+        let mut r = BufReader::new(client);
+        let mut all = String::new();
+        let mut buf = String::new();
+        while r.read_line(&mut buf).await.unwrap() > 0 {
+            all.push_str(&buf);
+            buf.clear();
+        }
+        assert!(!all.contains("BATCH"));
+        assert!(all.contains("PRIVMSG #x"));
+        assert!(all.contains("CHATHISTORY TARGETS #x"));
+    }
 }
