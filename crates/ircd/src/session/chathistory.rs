@@ -123,3 +123,89 @@ where
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::history::{HistBound, HistQuery};
+    use tokio::io::{AsyncBufReadExt, BufReader};
+
+    #[test]
+    fn parse_sub_verbs() {
+        assert!(is_targets(&[
+            "TARGETS".into(),
+            "*".into(),
+            "10".into()
+        ]));
+        let (q, ch, lim) = parse_sub(&["TARGETS".into(), "*".into(), "10".into()]).unwrap();
+        assert!(matches!(q, HistQuery::Latest));
+        assert!(ch.is_empty());
+        assert_eq!(lim, 10);
+        let (q, ch, lim) = parse_sub(&[
+            "BETWEEN".into(),
+            "#c".into(),
+            "msgid=dsc1".into(),
+            "msgid=dsc4".into(),
+            "8".into(),
+        ])
+        .unwrap();
+        assert!(matches!(
+            q,
+            HistQuery::Between(HistBound::MsgId(1), HistBound::MsgId(4))
+        ));
+        assert_eq!(ch, "#c");
+        assert_eq!(lim, 8);
+        let (q, _, _) =
+            parse_sub(&["AROUND".into(), "#c".into(), "*".into(), "3".into()]).unwrap();
+        assert!(matches!(q, HistQuery::Around(HistBound::None)));
+        let (q, _, _) =
+            parse_sub(&["AFTER".into(), "#c".into(), "dsc2".into(), "5".into()]).unwrap();
+        assert!(matches!(q, HistQuery::After(HistBound::MsgId(2))));
+        let (q, _, _) = parse_sub(&["BEFORE".into(), "#c".into(), "*".into()]).unwrap();
+        assert!(matches!(q, HistQuery::Before(_)));
+        let (q, _, _) =
+            parse_sub(&["LATEST".into(), "#c".into(), "*".into(), "1".into()]).unwrap();
+        assert!(matches!(q, HistQuery::Latest));
+        assert!(parse_sub(&["NOPE".into(), "#c".into()]).is_none());
+    }
+
+    #[tokio::test]
+    async fn emit_targets_and_history_batch() {
+        let mut caps = HashSet::new();
+        caps.insert("batch".into());
+        caps.insert("server-time".into());
+        caps.insert("message-tags".into());
+        let (client, server) = tokio::io::duplex(8192);
+        let mut writer = server;
+        let rows = [HistMsg {
+            id: 7,
+            channel: "#lab".into(),
+            ts_ms: 1_700_000_000_000,
+            prefix: "n!u@h".into(),
+            text: "hi".into(),
+        }];
+        emit_history_batch(&mut writer, "srv", &rows, &caps)
+            .await
+            .unwrap();
+        emit_targets_batch(
+            &mut writer,
+            "srv",
+            &[("#lab".into(), 7, 1_700_000_000_000)],
+            &caps,
+        )
+        .await
+        .unwrap();
+        drop(writer);
+        let mut r = BufReader::new(client);
+        let mut all = String::new();
+        let mut buf = String::new();
+        while r.read_line(&mut buf).await.unwrap() > 0 {
+            all.push_str(&buf);
+            buf.clear();
+        }
+        assert!(all.contains("BATCH +chathist"));
+        assert!(all.contains("PRIVMSG #lab"));
+        assert!(all.contains("CHATHISTORY TARGETS #lab"));
+        assert!(all.contains("BATCH -chathist"));
+    }
+}

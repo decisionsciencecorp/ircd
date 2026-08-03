@@ -640,7 +640,50 @@ mod tests {
     }
 
     #[test]
+    fn selectors_ts_between_and_lenient_msgid() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("sel.db");
+        let store = HistoryStore::open(&path, 100).unwrap();
+        for i in 0..6 {
+            store.append("#c", "p", &format!("{i}")).unwrap();
+        }
+        let rows = store.latest("#c", 6).unwrap();
+        let ts0 = rows[0].ts_ms;
+        let ts3 = rows[3].ts_ms;
+        assert_eq!(HistoryStore::parse_selector("dsc9"), HistBound::MsgId(9));
+        assert_eq!(HistoryStore::parse_selector("nope"), HistBound::None);
+        assert!(matches!(
+            HistoryStore::parse_selector(&format!(
+                "time={}",
+                unix_ms_to_rfc3339(ts0)
+            )),
+            HistBound::TsMs(_)
+        ));
+        assert!(matches!(
+            HistoryStore::parse_selector("timestamp=bogus"),
+            HistBound::TsMs(-1)
+        ));
+        let before_ts = store.before("#c", HistBound::TsMs(ts3 + 1), 10).unwrap();
+        assert!(before_ts.len() >= 3);
+        let around_ts = store.around("#c", HistBound::TsMs(ts3), 4).unwrap();
+        assert!(!around_ts.is_empty());
+        let between_ts = store
+            .between("#c", HistBound::TsMs(ts0), HistBound::TsMs(ts3), 10)
+            .unwrap();
+        assert!(!between_ts.is_empty());
+        let mixed = store
+            .between("#c", HistBound::MsgId(1), HistBound::TsMs(ts3), 3)
+            .unwrap();
+        assert_eq!(mixed.len(), 3);
+        let after_none = store.after("#c", HistBound::None, 2).unwrap();
+        assert_eq!(after_none.len(), 2);
+    }
+
+    #[test]
     fn rfc3339_epoch() {
         assert_eq!(rfc3339_to_unix_ms("1970-01-01T00:00:00.000Z"), Some(0));
+        assert_eq!(rfc3339_to_unix_ms("1970-01-01T00:00:00Z"), Some(0));
+        assert_eq!(rfc3339_to_unix_ms("short"), None);
+        assert_eq!(rfc3339_to_unix_ms("1970-01-01T00:00:00"), None);
     }
 }

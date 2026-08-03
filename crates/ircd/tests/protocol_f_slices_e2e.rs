@@ -313,3 +313,154 @@ async fn f4_kill_and_wallops() {
     })
     .await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn f3_chathistory_errors_and_targets() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("f3e.db");
+    let shared = shared_with_history(path);
+    with_client(shared.clone(), 78, |mut w, mut r| async move {
+        w.write_all(
+            b"CAP LS\r\nCAP REQ :batch draft/chathistory\r\nNICK a\r\nUSER a 0 * :A\r\nCAP END\r\nJOIN #z\r\n",
+        )
+        .await
+        .unwrap();
+        let _ = read_until(&mut r, |l| l.iter().any(|x| x.contains("366"))).await;
+        w.write_all(b"PRIVMSG #z :seed\r\n").await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        w.write_all(
+            b"CHATHISTORY NOPE #z * 1\r\nCHATHISTORY LATEST #other * 1\r\nCHATHISTORY TARGETS * 10\r\nQUIT :x\r\n",
+        )
+        .await
+        .unwrap();
+        let lines = read_until(&mut r, |l| {
+            l.iter().any(|x| x.contains("CHATHISTORY TARGETS"))
+                && l.iter().filter(|x| x.contains("400")).count() >= 1
+        })
+        .await;
+        assert!(
+            lines.iter().any(|l| l.contains("400") && l.contains("Invalid")),
+            "bad verb → 400: {lines:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l.contains("442")),
+            "not on channel → 442: {lines:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l.contains("CHATHISTORY TARGETS #z")),
+            "TARGETS lists joined channel: {lines:?}"
+        );
+    })
+    .await;
+
+    // History disabled → 400
+    let shared = shared_plain();
+    with_client(shared, 79, |mut w, mut r| async move {
+        w.write_all(b"NICK n\r\nUSER u 0 * :U\r\nCHATHISTORY LATEST #z * 1\r\nQUIT :x\r\n")
+            .await
+            .unwrap();
+        let lines = read_until(&mut r, |l| l.iter().any(|x| x.contains("400"))).await;
+        assert!(
+            lines.iter().any(|l| l.contains("History is disabled")),
+            "no store → 400: {lines:?}"
+        );
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn f3_join_auto_replay_without_chathistory_cap() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("f3j.db");
+    let shared = shared_with_history(path);
+    with_two_clients(shared, |(mut w1, mut r1), (mut w2, mut r2)| async move {
+        w1.write_all(b"NICK seed\r\nUSER s 0 * :S\r\nJOIN #r\r\nPRIVMSG #r :old\r\n")
+            .await
+            .unwrap();
+        let _ = read_until(&mut r1, |l| l.iter().any(|x| x.contains("PRIVMSG #r"))).await;
+        tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+        // No draft/chathistory CAP → JOIN auto-replays history lines.
+        w2.write_all(b"NICK joiner\r\nUSER j 0 * :J\r\nJOIN #r\r\nQUIT :x\r\n")
+            .await
+            .unwrap();
+        let lines = read_until(&mut r2, |l| {
+            l.iter().any(|x| x.contains("PRIVMSG #r") && x.contains("old"))
+        })
+        .await;
+        assert!(
+            lines.iter().any(|l| l.contains("PRIVMSG #r") && l.contains("old")),
+            "JOIN auto-replay: {lines:?}"
+        );
+        w1.write_all(b"QUIT :x\r\n").await.unwrap();
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn f2c_sasl_abort_and_chunk_continue() {
+    let shared = shared_plain();
+    with_client_secure(shared.clone(), 80, |mut w, mut r| async move {
+        w.write_all(
+            b"CAP LS\r\nCAP REQ :sasl\r\nAUTHENTICATE EXTERNAL\r\nAUTHENTICATE PLAIN\r\nAUTHENTICATE *\r\nNICK n\r\nUSER u 0 * :U\r\nCAP END\r\nQUIT :x\r\n",
+        )
+        .await
+        .unwrap();
+        let lines = read_until(&mut r, |l| {
+            l.iter().any(|x| x.contains("908")) && l.iter().any(|x| x.contains("906"))
+        })
+        .await;
+        assert!(
+            lines.iter().any(|l| l.contains("908")),
+            "bad mech → 908: {lines:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l.contains("906")),
+            "abort → 906: {lines:?}"
+        );
+    })
+    .await;
+
+    with_client_secure(shared, 81, |mut w, mut r| async move {
+        w.write_all(b"CAP LS\r\nCAP REQ :sasl\r\nAUTHENTICATE PLAIN\r\n")
+            .await
+            .unwrap();
+        let _ = read_until(&mut r, |l| l.iter().any(|x| x == "AUTHENTICATE +")).await;
+        // Exact 400-char chunk (continue) then a final chunk — buf becomes garbage → 904.
+        let chunk = "A".repeat(400);
+        w.write_all(format!("AUTHENTICATE {chunk}\r\n").as_bytes())
+            .await
+            .unwrap();
+        w.write_all(
+            b"AUTHENTICATE AGFsaWNlAHNlY3JldA==\r\nNICK n\r\nUSER u 0 * :U\r\nCAP END\r\nQUIT :x\r\n",
+        )
+        .await
+        .unwrap();
+        let lines = read_until(&mut r, |l| {
+            l.iter().any(|x| x.contains("903") || x.contains("904"))
+        })
+        .await;
+        assert!(
+            lines.iter().any(|l| l.contains("904")),
+            "400-chunk then final → 904: {lines:?}"
+        );
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn f1d_pass_accepts_correct_password() {
+    let mut cfg = common::base_cfg(None);
+    cfg.server.password = "s3cret".into();
+    let shared = Arc::new(Mutex::new(Shared::new(Arc::new(cfg), None)));
+    with_client(shared, 82, |mut w, mut r| async move {
+        w.write_all(b"PASS s3cret\r\nNICK n\r\nUSER u 0 * :U\r\nQUIT :x\r\n")
+            .await
+            .unwrap();
+        let lines = read_until(&mut r, |l| l.iter().any(|x| x.contains("001 "))).await;
+        assert!(
+            lines.iter().any(|l| l.contains("001 ")),
+            "good PASS → register: {lines:?}"
+        );
+    })
+    .await;
+}
