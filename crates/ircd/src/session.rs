@@ -722,6 +722,9 @@ where
 
                 if msg.command_eq("PRIVMSG") {
                     let (Some(target), Some(text)) = (msg.params.first(), msg.params.get(1)) else {
+                        writer.write_all(
+                            numeric(server_name, 461, nick_s, &["PRIVMSG", "Not enough parameters"]).as_bytes(),
+                        ).await?;
                         continue;
                     };
                     if target.starts_with('#') {
@@ -747,15 +750,34 @@ where
                                 .await
                             {
                                 Ok(h) => h.tagged_privmsg(),
-                                Err(_) => format!(":{prefix} PRIVMSG {target} :{text}\r\n"),
+                                Err(_) => format!(":{prefix} PRIVMSG {target} :{text}
+"),
                             }
                         } else {
-                            format!(":{prefix} PRIVMSG {target} :{text}\r\n")
+                            format!(":{prefix} PRIVMSG {target} :{text}
+")
                         };
                         if let Some(acc) = account.as_deref() {
                             line = prepend_tag(&line, "account", acc);
                         }
                         let _ = shared.lock().await.fanout_channel(target.as_str(), &line, conn_id);
+                    } else {
+                        let tid = {
+                            let g = shared.lock().await;
+                            g.nicks.get(&ascii_casefold(target)).copied()
+                        };
+                        let Some(tid) = tid else {
+                            writer.write_all(
+                                numeric(server_name, 401, nick_s, &[target.as_str(), "No such nick/channel"]).as_bytes(),
+                            ).await?;
+                            continue;
+                        };
+                        let mut line = format!(":{prefix} PRIVMSG {target} :{text}
+");
+                        if let Some(acc) = account.as_deref() {
+                            line = prepend_tag(&line, "account", acc);
+                        }
+                        let _ = shared.lock().await.fanout_ids(&[tid], &line);
                     }
                     continue;
                 }
@@ -1036,6 +1058,408 @@ where
                         writer.write_all(line.as_bytes()).await?;
                         let _ = shared.lock().await.fanout_channel(target.as_str(), &line, conn_id);
                     }
+                    continue;
+                }
+
+                if msg.command_eq("NOTICE") {
+                    let (Some(target), Some(text)) = (msg.params.first(), msg.params.get(1)) else {
+                        continue; // NOTICE: no error replies
+                    };
+                    if target.starts_with('#') {
+                        let allowed = {
+                            let g = shared.lock().await;
+                            match g.channels.get(target.as_str()) {
+                                Some(ch) if ch.members.contains(&conn_id) => true,
+                                Some(ch) if !ch.mode_n => true,
+                                _ => false,
+                            }
+                        };
+                        if allowed {
+                            let line = format!(":{prefix} NOTICE {target} :{text}\r\n");
+                            let _ = shared.lock().await.fanout_channel(target.as_str(), &line, conn_id);
+                        }
+                    } else {
+                        let tid = {
+                            let g = shared.lock().await;
+                            g.nicks.get(&ascii_casefold(target)).copied()
+                        };
+                        if let Some(tid) = tid {
+                            let line = format!(":{prefix} NOTICE {target} :{text}\r\n");
+                            let _ = shared.lock().await.fanout_ids(&[tid], &line);
+                        }
+                    }
+                    continue;
+                }
+
+                if msg.command_eq("NAMES") {
+                    let chan_list = msg.params.first().cloned().unwrap_or_default();
+                    let targets: Vec<String> = if chan_list.is_empty() {
+                        let g = shared.lock().await;
+                        g.channels.keys().cloned().collect()
+                    } else {
+                        chan_list
+                            .split(',')
+                            .map(|s| s.trim().to_string())
+                            .filter(|s| !s.is_empty())
+                            .collect()
+                    };
+                    for chan in targets {
+                        let snap = {
+                            let g = shared.lock().await;
+                            g.channels.get(chan.as_str()).map(|ch| {
+                                crate::state::NamesSnapshot::from_sets(
+                                    &ch.members,
+                                    &ch.ops,
+                                    &g.id_to_nick,
+                                )
+                            })
+                        };
+                        if let Some(snap) = snap {
+                            let overhead = server_name.len() + nick_s.len() + chan.len() + 24;
+                            let max_payload =
+                                cfg.limits.max_line_bytes.saturating_sub(overhead).max(16);
+                            for chunk in snap.split_for_wire(max_payload) {
+                                writer
+                                    .write_all(
+                                        numeric(
+                                            server_name,
+                                            353,
+                                            nick_s,
+                                            &["=", chan.as_str(), chunk.as_str()],
+                                        )
+                                        .as_bytes(),
+                                    )
+                                    .await?;
+                            }
+                        }
+                        writer
+                            .write_all(
+                                numeric(
+                                    server_name,
+                                    366,
+                                    nick_s,
+                                    &[chan.as_str(), "End of /NAMES list"],
+                                )
+                                .as_bytes(),
+                            )
+                            .await?;
+                    }
+                    if chan_list.is_empty() {
+                        // RFC: end with 366 * when listing all — already emitted per channel.
+                    }
+                    continue;
+                }
+
+                if msg.command_eq("LIST") {
+                    writer
+                        .write_all(
+                            numeric(server_name, 321, nick_s, &["Channel", "Users Name"]).as_bytes(),
+                        )
+                        .await?;
+                    let rows = {
+                        let g = shared.lock().await;
+                        let filter = msg.params.first().cloned();
+                        let mut v: Vec<(String, usize, String)> = g
+                            .channels
+                            .iter()
+                            .filter(|(name, _)| {
+                                filter
+                                    .as_ref()
+                                    .map(|f| f.split(',').any(|c| c.trim() == name.as_str()))
+                                    .unwrap_or(true)
+                            })
+                            .map(|(name, ch)| {
+                                (
+                                    name.clone(),
+                                    ch.members.len(),
+                                    ch.topic.clone().unwrap_or_default(),
+                                )
+                            })
+                            .collect();
+                        v.sort_by(|a, b| a.0.cmp(&b.0));
+                        v
+                    };
+                    for (name, n, topic) in rows {
+                        let n_s = n.to_string();
+                        writer
+                            .write_all(
+                                numeric(
+                                    server_name,
+                                    322,
+                                    nick_s,
+                                    &[name.as_str(), n_s.as_str(), topic.as_str()],
+                                )
+                                .as_bytes(),
+                            )
+                            .await?;
+                    }
+                    writer
+                        .write_all(
+                            numeric(server_name, 323, nick_s, &["End of /LIST"]).as_bytes(),
+                        )
+                        .await?;
+                    continue;
+                }
+
+                if msg.command_eq("WHO") {
+                    let mask = msg.params.first().map(String::as_str).unwrap_or("0");
+                    let rows = {
+                        let g = shared.lock().await;
+                        let mut out = Vec::new();
+                        if mask.starts_with('#') {
+                            if let Some(ch) = g.channels.get(mask) {
+                                for id in &ch.members {
+                                    if let Some(n) = g.id_to_nick.get(id) {
+                                        let flags = if ch.ops.contains(id) { "H@" } else { "H" };
+                                        out.push((
+                                            mask.to_string(),
+                                            n.clone(),
+                                            flags.to_string(),
+                                        ));
+                                    }
+                                }
+                            }
+                        } else {
+                            for (key, id) in &g.nicks {
+                                if mask == "0"
+                                    || mask == "*"
+                                    || key.eq_ignore_ascii_case(mask)
+                                {
+                                    let display = g
+                                        .id_to_nick
+                                        .get(id)
+                                        .cloned()
+                                        .unwrap_or_else(|| key.clone());
+                                    out.push(("*".into(), display, "H".into()));
+                                }
+                            }
+                        }
+                        out
+                    };
+                    for (chan, n, flags) in rows {
+                        // 352: <channel> <user> <host> <server> <nick> <H|G>[*][@|+] :<hopcount> <real>
+                        writer
+                            .write_all(
+                                numeric(
+                                    server_name,
+                                    352,
+                                    nick_s,
+                                    &[
+                                        chan.as_str(),
+                                        "user",
+                                        "dsc.local",
+                                        server_name,
+                                        n.as_str(),
+                                        flags.as_str(),
+                                        "0 realname",
+                                    ],
+                                )
+                                .as_bytes(),
+                            )
+                            .await?;
+                    }
+                    writer
+                        .write_all(
+                            numeric(server_name, 315, nick_s, &[mask, "End of /WHO list"]).as_bytes(),
+                        )
+                        .await?;
+                    continue;
+                }
+
+                if msg.command_eq("WHOIS") {
+                    let Some(target) = msg.params.first() else {
+                        writer
+                            .write_all(
+                                numeric(
+                                    server_name,
+                                    461,
+                                    nick_s,
+                                    &["WHOIS", "Not enough parameters"],
+                                )
+                                .as_bytes(),
+                            )
+                            .await?;
+                        continue;
+                    };
+                    let info = {
+                        let g = shared.lock().await;
+                        let tid = g.nicks.get(&ascii_casefold(target)).copied();
+                        tid.map(|id| {
+                            let nick = g.id_to_nick.get(&id).cloned().unwrap_or_else(|| target.clone());
+                            let chans: Vec<String> = g
+                                .channels
+                                .iter()
+                                .filter(|(_, ch)| ch.members.contains(&id))
+                                .map(|(name, ch)| {
+                                    if ch.ops.contains(&id) {
+                                        format!("@{name}")
+                                    } else {
+                                        name.clone()
+                                    }
+                                })
+                                .collect();
+                            (nick, chans)
+                        })
+                    };
+                    let Some((who_nick, chans)) = info else {
+                        writer
+                            .write_all(
+                                numeric(
+                                    server_name,
+                                    401,
+                                    nick_s,
+                                    &[target.as_str(), "No such nick/channel"],
+                                )
+                                .as_bytes(),
+                            )
+                            .await?;
+                        continue;
+                    };
+                    writer
+                        .write_all(
+                            numeric(
+                                server_name,
+                                311,
+                                nick_s,
+                                &[
+                                    who_nick.as_str(),
+                                    "user",
+                                    "dsc.local",
+                                    "*",
+                                    "realname",
+                                ],
+                            )
+                            .as_bytes(),
+                        )
+                        .await?;
+                    writer
+                        .write_all(
+                            numeric(
+                                server_name,
+                                312,
+                                nick_s,
+                                &[who_nick.as_str(), server_name, "DSC ircd"],
+                            )
+                            .as_bytes(),
+                        )
+                        .await?;
+                    if !chans.is_empty() {
+                        let list = chans.join(" ");
+                        writer
+                            .write_all(
+                                numeric(
+                                    server_name,
+                                    319,
+                                    nick_s,
+                                    &[who_nick.as_str(), list.as_str()],
+                                )
+                                .as_bytes(),
+                            )
+                            .await?;
+                    }
+                    writer
+                        .write_all(
+                            numeric(
+                                server_name,
+                                318,
+                                nick_s,
+                                &[who_nick.as_str(), "End of /WHOIS list"],
+                            )
+                            .as_bytes(),
+                        )
+                        .await?;
+                    continue;
+                }
+
+                if msg.command_eq("MOTD") {
+                    let motd_start = format!("- {server_name} Message of the day -");
+                    writer
+                        .write_all(
+                            numeric(server_name, 375, nick_s, &[motd_start.as_str()]).as_bytes(),
+                        )
+                        .await?;
+                    for line in cfg.server.motd.lines() {
+                        let body = format!("- {line}");
+                        writer
+                            .write_all(
+                                numeric(server_name, 372, nick_s, &[body.as_str()]).as_bytes(),
+                            )
+                            .await?;
+                    }
+                    writer
+                        .write_all(
+                            numeric(server_name, 376, nick_s, &["End of /MOTD command"]).as_bytes(),
+                        )
+                        .await?;
+                    continue;
+                }
+
+                if msg.command_eq("VERSION") {
+                    writer
+                        .write_all(
+                            numeric(
+                                server_name,
+                                351,
+                                nick_s,
+                                &[
+                                    &format!("dsc-ircd-{VERSION}"),
+                                    server_name,
+                                    "Mark x Cody IRC",
+                                ],
+                            )
+                            .as_bytes(),
+                        )
+                        .await?;
+                    continue;
+                }
+
+                if msg.command_eq("LUSERS") {
+                    let (clients, channels_n) = {
+                        let g = shared.lock().await;
+                        (g.client_count, g.channels.len())
+                    };
+                    let c_s = clients.to_string();
+                    let ch_s = channels_n.to_string();
+                    writer
+                        .write_all(
+                            numeric(
+                                server_name,
+                                251,
+                                nick_s,
+                                &[&format!(
+                                    "There are {clients} users and 0 invisible on 1 servers"
+                                )],
+                            )
+                            .as_bytes(),
+                        )
+                        .await?;
+                    writer
+                        .write_all(
+                            numeric(server_name, 252, nick_s, &["0", "operator(s) online"]).as_bytes(),
+                        )
+                        .await?;
+                    writer
+                        .write_all(
+                            numeric(
+                                server_name,
+                                254,
+                                nick_s,
+                                &[ch_s.as_str(), "channels formed"],
+                            )
+                            .as_bytes(),
+                        )
+                        .await?;
+                    writer
+                        .write_all(
+                            numeric(
+                                server_name,
+                                255,
+                                nick_s,
+                                &[&format!("I have {c_s} clients and 1 servers")],
+                            )
+                            .as_bytes(),
+                        )
+                        .await?;
                     continue;
                 }
 

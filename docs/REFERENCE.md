@@ -74,3 +74,8 @@ History retention: `[history] max_per_channel`, `max_total_rows` (see A6).
 | `require_irc_subprotocol` | `true` | Require `Sec-WebSocket-Protocol: irc` |
 
 Admission runs before the WS upgrade. Policy helpers: `ws_policy` / `evaluate_ws_handshake`.
+
+
+## Standalone queries (C1)
+
+Registered clients may issue: `PRIVMSG`/`NOTICE` (channel + nick), `NAMES`, `LIST`, `WHO`, `WHOIS`, `MOTD`, `VERSION`, `LUSERS`. Direct `PRIVMSG` to unknown nick → **401**; missing params → **461**. `NOTICE` stays silent on errors.
