@@ -288,6 +288,54 @@ async fn kick_revokes_privmsg_for_victim() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn bare_ping_409_and_quit_error() {
+    let shared = shared_plain();
+    with_client(shared, 7, |mut w, mut r| async move {
+        w.write_all(b"NICK p\r\nUSER u 0 * :U\r\nPING\r\nQUIT :done\r\n")
+            .await
+            .unwrap();
+        let lines = read_until(&mut r, |l| {
+            l.iter().any(|x| x.contains("409")) && l.iter().any(|x| x.contains("ERROR"))
+        })
+        .await;
+        assert!(
+            lines.iter().any(|l| l.contains("409") && l.contains("No origin")),
+            "bare PING must 409: {lines:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l.contains("ERROR") && l.contains("Closing Link")),
+            "QUIT must ERROR: {lines:?}"
+        );
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn quit_fanout_to_channel_peer() {
+    let shared = shared_plain();
+    with_two_clients(shared, |(mut w1, mut r1), (mut w2, mut r2)| async move {
+        w1.write_all(b"NICK stay\r\nUSER s 0 * :S\r\nJOIN #q\r\n")
+            .await
+            .unwrap();
+        let _ = read_until(&mut r1, |l| l.iter().any(|x| x.contains("366"))).await;
+        w2.write_all(b"NICK leave\r\nUSER l 0 * :L\r\nJOIN #q\r\n")
+            .await
+            .unwrap();
+        let _ = read_until(&mut r2, |l| l.iter().any(|x| x.contains("366"))).await;
+        let _ = read_until(&mut r1, |l| l.iter().any(|x| x.contains("JOIN"))).await;
+        w2.write_all(b"QUIT :leave now\r\n").await.unwrap();
+        let peer = read_until(&mut r1, |l| l.iter().any(|x| x.contains("QUIT"))).await;
+        assert!(
+            peer.iter()
+                .any(|l| l.contains("QUIT") && l.contains("leave now")),
+            "peer must see QUIT reason: {peer:?}"
+        );
+        w1.write_all(b"QUIT :x\r\n").await.unwrap();
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn error_exit_clears_nick_for_reuse() {
     let shared = shared_plain();
     // First client registers nick then we drop by closing write side via QUIT after join;
@@ -297,7 +345,7 @@ async fn error_exit_clears_nick_for_reuse() {
             .await
             .unwrap();
         let _ = read_until(&mut r1, |l| {
-            l.iter().any(|x| x.contains("QUIT") || x.contains("JOIN"))
+            l.iter().any(|x| x.contains("QUIT") || x.contains("JOIN") || x.contains("ERROR"))
         })
         .await;
         // Allow Drop cleanup spawn to run

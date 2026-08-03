@@ -50,3 +50,24 @@ jobs:
             --exclude-files '**/ircd/src/ws.rs' \
             --exclude-files '**/ircd/src/tls.rs' \
             --ignore-tests --fail-under 90 --timeout 300
+
+  # C6 — curated progval/irctest against the built binary (docs/IRCTEST.md).
+  irctest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: clone irctest
+        run: |
+          git clone --depth 1 https://github.com/progval/irctest.git "$HOME/irctest"
+          python -m venv "$HOME/irctest-venv"
+          "$HOME/irctest-venv/bin/pip" install -r "$HOME/irctest/requirements.txt"
+      - name: curated irctest
+        run: |
+          export IRCTEST_DIR="$HOME/irctest"
+          export PATH="$HOME/irctest-venv/bin:$PATH"
+          bash tools/irctest/run_curated.sh

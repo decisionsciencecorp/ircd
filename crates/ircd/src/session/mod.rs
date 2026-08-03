@@ -107,6 +107,7 @@ where
     let max_line = cfg.limits.max_line_bytes.max(64);
     let mut channels: HashSet<String> = HashSet::new();
     let mut quit_reason: Option<String> = None;
+    let mut quit_announced = false;
     let mut account: Option<String> = None;
     let mut sasl_state = SaslState::Idle;
     let has_accounts = !cfg.accounts.is_empty();
@@ -419,20 +420,60 @@ where
                 continue;
             }
 
-            Command::Ping { .. } => {
-                let token = msg
-                    .params
-                    .first()
-                    .map(String::as_str)
-                    .unwrap_or(server_name);
-                writer
-                    .write_all(format!(":{server_name} PONG {server_name} :{token}\r\n").as_bytes())
-                    .await?;
+            Command::Ping { token } => {
+                match token {
+                    Some(t) => {
+                        writer
+                            .write_all(
+                                format!(":{server_name} PONG {server_name} :{t}\r\n").as_bytes(),
+                            )
+                            .await?;
+                    }
+                    None => {
+                        // Modern / irctest: bare PING → ERR_NOORIGIN (or 461).
+                        writer
+                            .write_all(
+                                numeric(
+                                    server_name,
+                                    409,
+                                    nick.as_deref().unwrap_or("*"),
+                                    &["No origin specified"],
+                                )
+                                .as_bytes(),
+                            )
+                            .await?;
+                    }
+                }
                 continue;
             }
 
-            Command::Quit { .. } => {
-                quit_reason = msg.params.first().cloned().filter(|r| !r.is_empty());
+            Command::Quit { reason } => {
+                quit_reason = reason.clone().filter(|r| !r.is_empty());
+                // Announce to channels + ERROR before close so irctest can sync-PING.
+                if let Some(n) = nick.as_deref() {
+                    let mut g = shared.lock().await;
+                    for chan in &channels {
+                        let user_s = user.as_deref().unwrap_or("user");
+                        let why = quit_reason.as_deref().unwrap_or("Client Quit");
+                        let line = format!(":{n}!{user_s}@dsc.local QUIT :{why}\r\n");
+                        let _ = g.fanout_channel(chan, &line, conn_id);
+                        if let Some(ch) = g.channel_mut(chan) {
+                            ch.remove_member(conn_id);
+                        }
+                        g.remove_channel_if_empty(chan);
+                    }
+                    let _ = g.clear_nick(conn_id);
+                }
+                channels.clear();
+                let why = quit_reason.as_deref().unwrap_or("Client Quit");
+                let n = nick.as_deref().unwrap_or("*");
+                writer
+                    .write_all(
+                        format!("ERROR :Closing Link: {n} (Quit: {why})\r\n").as_bytes(),
+                    )
+                    .await?;
+                writer.flush().await?;
+                quit_announced = true;
                 break;
             }
             _ => {
@@ -1946,15 +1987,17 @@ where
     if let Some(n) = nick {
         let mut g = shared.lock().await;
         let _ = g.clear_nick(conn_id);
-        for chan in &channels {
-            let user_s = user.as_deref().unwrap_or("user");
-            let reason = quit_reason.as_deref().unwrap_or("Connection closed");
-            let line = format!(":{n}!{user_s}@dsc.local QUIT :{reason}\r\n");
-            let _ = g.fanout_channel(chan, &line, conn_id);
-            if let Some(ch) = g.channel_mut(chan) {
-                ch.remove_member(conn_id);
+        if !quit_announced {
+            for chan in &channels {
+                let user_s = user.as_deref().unwrap_or("user");
+                let reason = quit_reason.as_deref().unwrap_or("Connection closed");
+                let line = format!(":{n}!{user_s}@dsc.local QUIT :{reason}\r\n");
+                let _ = g.fanout_channel(chan, &line, conn_id);
+                if let Some(ch) = g.channel_mut(chan) {
+                    ch.remove_member(conn_id);
+                }
+                g.remove_channel_if_empty(chan);
             }
-            g.remove_channel_if_empty(chan);
         }
         g.unregister_outbox(conn_id);
     }

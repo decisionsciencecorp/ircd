@@ -170,6 +170,11 @@ GitHub Actions: `.github/workflows/ci.yml`
 | audit | `cargo audit` (no rustls-pemfile — PEM via `rustls::pki_types`) |
 | soak | `bash tools/c5_soak.sh` |
 | coverage | tarpaulin fail-under **90** (same flags as above) |
+| irctest (C6) | `bash tools/irctest/run_curated.sh` — see **`docs/IRCTEST.md`** |
+
+## irctest (C6)
+
+In-tree controller + curated marker/`-k` gate for [progval/irctest](https://github.com/progval/irctest). Allowlist of intentionally unsupported optionals and the “do not skip advertised caps” rule: **`docs/IRCTEST.md`**.
 
 ## Tasks trail
 
