@@ -733,5 +733,31 @@ mod tests {
             .between("#c", HistBound::None, HistBound::MsgId(1), 5)
             .unwrap()
             .is_empty());
+        // Pivot arm `_ => None` (MsgId ≤ 0).
+        let _ = store.around("#c", HistBound::MsgId(0), 2).unwrap();
+    }
+
+    #[test]
+    fn nearest_ts_floor_ceil_and_closer_branch() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("fc.db");
+        let store = HistoryStore::open(&path, 50).unwrap();
+        let a = store.append("#c", "p", "a").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let b = store.append("#c", "p", "b").unwrap();
+        assert!(b.ts_ms >= a.ts_ms);
+        let bias = a.ts_ms + (b.ts_ms - a.ts_ms).max(1) * 3 / 4;
+        assert!(!store
+            .around("#c", HistBound::TsMs(bias), 3)
+            .unwrap()
+            .is_empty());
+        assert!(!store
+            .around("#c", HistBound::TsMs(b.ts_ms + 1_000_000), 2)
+            .unwrap()
+            .is_empty());
+        assert!(!store
+            .around("#c", HistBound::TsMs(a.ts_ms - 1_000_000), 2)
+            .unwrap()
+            .is_empty());
     }
 }
