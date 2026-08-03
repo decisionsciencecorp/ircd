@@ -371,6 +371,8 @@ mod tests {
         assert!(c.limits.max_channels_per_client >= 1);
         assert!(c.limits.max_members_per_channel >= 1);
         assert!(c.limits.max_topic_bytes >= 1);
+        assert_eq!(clamp_auto_replay_on_join(500), 200);
+        assert_eq!(clamp_auto_replay_on_join(50), 50);
     }
 
     #[test]

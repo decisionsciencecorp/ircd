@@ -125,9 +125,7 @@ pub const MAX_TAG_BLOCK_BYTES: usize = 4096;
 
 /// Validate an inbound tag block. `None` = ok; `Some(417)` = too large / bad.
 pub fn validate_tag_block(tags: Option<&str>) -> Option<u16> {
-    let Some(tags) = tags else {
-        return None;
-    };
+    let tags = tags?;
     if tags.len() > MAX_TAG_BLOCK_BYTES {
         return Some(417);
     }

@@ -461,7 +461,7 @@ pub fn advertise_caps(has_accounts: bool, has_history: bool) -> Vec<String> {
 
 /// Status code → whether it is an error numeric (>=400).
 pub fn is_error_numeric(code: u16) -> bool {
-    code >= 400 && code < 600
+    (400..600).contains(&code)
 }
 
 /// Status code → whether it is a SASL numeric.

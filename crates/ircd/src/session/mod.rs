@@ -111,7 +111,7 @@ where
     let mut cap_negotiating = false;
     let mut enabled_caps: HashSet<String> = HashSet::from(["cap-notify".to_string()]);
     let max_line = cfg.limits.max_line_bytes.max(64);
-    let mut reader = BufReader::with_capacity(max_line.min(8192).max(256), reader);
+    let mut reader = BufReader::with_capacity(max_line.clamp(256, 8192), reader);
     let mut line_buf: Vec<u8> = Vec::with_capacity(256);
     let mut channels: HashSet<String> = HashSet::new();
     let mut quit_reason: Option<String> = None;
@@ -267,27 +267,26 @@ where
                     .first()
                     .map(|s| s.eq_ignore_ascii_case("END"))
                     .unwrap_or(false)
+                    && pass_ok
                 {
-                    if pass_ok {
-                        try_register(
-                            &mut writer,
-                            server_name,
-                            &cfg.server.motd,
-                            &mut registered,
-                            nick.as_deref(),
-                            user.as_deref(),
-                            realname.as_deref(),
-                            cap_negotiating,
-                            cfg.server.max_nick_length,
-                            cfg.server.max_channel_length,
-                            if has_history {
-                                Some(register::CHATHISTORY_ISUPPORT_MAX)
-                            } else {
-                                None
-                            },
-                        )
-                        .await?;
-                    }
+                    try_register(
+                        &mut writer,
+                        server_name,
+                        &cfg.server.motd,
+                        &mut registered,
+                        nick.as_deref(),
+                        user.as_deref(),
+                        realname.as_deref(),
+                        cap_negotiating,
+                        cfg.server.max_nick_length,
+                        cfg.server.max_channel_length,
+                        if has_history {
+                            Some(register::CHATHISTORY_ISUPPORT_MAX)
+                        } else {
+                            None
+                        },
+                    )
+                    .await?;
                 }
                 continue;
             }

@@ -715,4 +715,23 @@ mod tests {
         assert_eq!(rfc3339_to_unix_ms("short"), None);
         assert_eq!(rfc3339_to_unix_ms("1970-01-01T00:00:00"), None);
     }
+
+    #[test]
+    fn nearest_ts_empty_and_around_none_bound() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("near.db");
+        let store = HistoryStore::open(&path, 50).unwrap();
+        assert!(store
+            .around("#missing", HistBound::TsMs(1), 4)
+            .unwrap()
+            .is_empty());
+        store.append("#c", "p", "only").unwrap();
+        let ts = store.latest("#c", 1).unwrap()[0].ts_ms;
+        let hit = store.around("#c", HistBound::TsMs(ts + 10_000), 2).unwrap();
+        assert_eq!(hit.len(), 1);
+        assert!(store
+            .between("#c", HistBound::None, HistBound::MsgId(1), 5)
+            .unwrap()
+            .is_empty());
+    }
 }
