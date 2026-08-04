@@ -179,6 +179,7 @@ Services commands are package-specific — keep their one-pager next to this fil
 
 ## Related
 
+- Canonical Tasks copy: [Doc #984](https://tasks.decisionsciencecorp.com/admin/doc.php?id=984)
 - Program: [Doc #973](https://tasks.decisionsciencecorp.com/admin/doc.php?id=973)
 - Protocol program: [Doc #976](https://tasks.decisionsciencecorp.com/admin/doc.php?id=976)
 - Lab: `docs/LAB.md`
