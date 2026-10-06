@@ -77,4 +77,10 @@ Testing list: **369** (tasks #2203–#2208)
 
 ## License
 
-MIT — Decision Science Corp. Upstream references retain their own licenses; we do not redistribute their source here.
+Copyright (c) 2026 Decision Science Corp.
+
+Program source (`crates/`, `fuzz/`, `tools/`, `.github/`, Cargo manifests, `tarpaulin.toml`) is under the **GNU Affero General Public License, version 3 only** ([`LICENSE-AGPL-3.0`](LICENSE-AGPL-3.0)).
+
+Everything else in this repository, including this README, `docs/`, and `config.example.toml`, is under **Creative Commons Attribution-ShareAlike 4.0 International** ([`LICENSE-CC-BY-SA-4.0`](LICENSE-CC-BY-SA-4.0)).
+
+See [`LICENSE`](LICENSE). Upstream references retain their own licenses; we do not redistribute their source here.

@@ -3,6 +3,7 @@ name = "ircd-fuzz"
 version = "0.0.0"
 publish = false
 edition = "2021"
+license = "AGPL-3.0-only"
 
 # Standalone from the dsc-ircd workspace (cargo-fuzz requirement).
 [workspace]
