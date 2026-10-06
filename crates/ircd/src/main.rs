@@ -38,7 +38,7 @@ Usage:
   ircd gen-cert [--out DIR] [--cn NAME]
 
 CLI listen flags override config file listens when present.
-See config.example.toml and docs/REFERENCE.md."
+See config.example.toml and docs/."
     );
 }
 

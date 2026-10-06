@@ -1,93 +1,63 @@
-# Reference strategy
+# Design reference
 
-## Decision (Mark, 2026-08-02)
+Decision Science Corp, 2026. This server exists so a small network can run a modern IRC daemon we can read, test, and license on our own terms.
 
-Take the **most supported open-source IRCd** as the north-star feature/ops model and **implement a clean-room server in Rust** under Decision Science Corp.
+## What we copied, and what we did not
 
-| Role | Project | Why |
+UnrealIRCd is the north star for operator expectations: listeners, oper, channel modes, flood, a config surface an Unreal admin can map. Ergo is the north star for IRCv3 shape: tags, history, a server that is pleasant over WebSocket. ircd-hybrid is the check on what is baseline versus optional.
+
+| Role | Project | Use |
 |------|---------|-----|
-| **Primary reference (ops + feature breadth)** | [UnrealIRCd](https://www.unrealircd.org/) ([GitHub](https://github.com/unrealircd/unrealircd)) | Most widely deployed / actively maintained production IRCd; modular; strong IRCv3; battle-tested at network scale. |
-| **Modern IRCv3 design reference** | [Ergo](https://github.com/ergochat/ergo) | Designed around IRCv3 (tags, history, web-friendly transport). Read for architecture — not our runtime language. |
-| **Minimal baseline** | [ircd-hybrid](https://github.com/ircd-hybrid/ircd-hybrid) | Scope check: required vs nice-to-have. |
+| Ops and feature breadth | [UnrealIRCd](https://www.unrealircd.org/) | Behavior, docs, config ideas |
+| IRCv3 shape | [Ergo](https://github.com/ergochat/ergo) | Tags, history, batch, web-friendly transport |
+| Scope check | [ircd-hybrid](https://github.com/ircd-hybrid/ircd-hybrid) | Required versus nice-to-have |
 
-## This is not a source fork
+UnrealIRCd is GPL-2.0. This repository is a new Rust program.
 
-UnrealIRCd is **GPL-2.0**. This repository is a **new Rust codebase**. We:
+- We study behavior, docs, and the protocol feature set.
+- We do not copy Unreal or Ergo source into this tree.
+- We do not start from abandoned Rust IRCds.
 
-- Study Unreal’s **behavior**, docs, config surface, and protocol feature set.
-- Study Ergo for **IRCv3 patterns** (CHATHISTORY, message tags, WebSocket-oriented design).
-- Do **not** copy Unreal (or Ergo) source into this tree.
-- Do **not** treat `liamzdenek/ircd-rs` (last push 2016) as a base — it is abandoned.
+The license split for **this** tree is AGPL-3.0-only for program source and CC BY-SA 4.0 for everything else. See [LICENSE](../LICENSE).
 
-See Tasks [Doc #972](https://tasks.decisionsciencecorp.com/admin/doc.php?id=972).
+## Goals
 
-## Client protocol bar (2026-08-03)
+1. One process. TCP, TLS, and WebSocket.
+2. A client can register, talk, join, and moderate with the commands in [protocol.md](protocol.md).
+3. Every capability in `CAP LS` is implemented and tested. Advertising a cap without a test is a defect.
+4. Config is TOML, with names an Unreal admin can recognize. The key list is [configuration.md](configuration.md).
+5. Services stay beside the daemon. NickServ and ChanServ are Atheme or Anope, not a second server hidden in this binary.
 
-**Full** Modern IRC + advertised IRCv3 compliance (not a v0 subset). Living scorecard: [`PROTOCOL-MATRIX.md`](PROTOCOL-MATRIX.md) · Tasks program Doc **#976** · epic **#2251**.
+## Non-goals
 
-## Server goals
+| Surface | Why it is out |
+|---------|----------------|
+| Server-to-server linking | Different program. History is local SQLite on purpose. |
+| In-daemon NickServ / ChanServ | Services packages already exist. The daemon stays a daemon. |
+| Unreal module parity | We are not porting the module tree. |
+| WHOX, voice, halfop, keys, `+e`, `+I` | Not advertised. Adding them means implementing them and then advertising them. |
+| A graphical client | Out of this repository. `ircc` is a smoke tool. |
 
-1. Single-node TCP + TLS (+ WebSocket) IRCd.
-2. NICK/USER/CAP registration, messaging, channels, modes, queries — see matrix.
-3. Every **advertised** IRCv3 capability fully implemented and tested.
-4. Config shape familiar to Unreal admins where it does not fight Rust structure.
-5. Clean handoff to Tauri/web + Swift clients on board **ircd + clients & sidecars** (Tasks project 48).
+The scorecard that tracks pass, partial, and missing is [PROTOCOL-MATRIX.md](PROTOCOL-MATRIX.md).
 
-## Config mapping (Unreal concepts → dsc-ircd TOML)
+## Config shape
 
-We use **TOML** (`config.example.toml`), not Unreal’s block language. Knobs map roughly:
+TOML, not Unreal's block language. The mapping:
 
 | Unreal idea | dsc-ircd |
-|-------------|---------|
-| `me { name … }` | `[server] name` |
-| MOTD file / `motd` | `[server] motd` (inline string; multi-line OK) |
-| Admin block | `[server] admin_name`, `admin_email` |
-| Nick length / channel length limits | `[server] max_nick_length`, `max_channel_length` |
-| `listen { ip; port; }` | `[[listen]] bind = "ip:port"` |
-| `listen { … options { tls; } }` + cert files | `[[listen]] tls = true` + `cert` / `key` |
-| `oper { }` | `[oper]` (`enabled`, `name`, `password`) |
-| Channel history / replay | `[history]` sqlite path + `CHATHISTORY LATEST` + JOIN auto-replay |
-| NickServ-style accounts | `[[accounts]]` + IRCv3 **SASL PLAIN** (`AUTHENTICATE`) + `account-tag` |
-| Connection class / flood | `[limits]` — `max_clients`, `max_clients_per_ip`, `flood_lines_per_window`, `flood_window_secs` |
+|-------------|----------|
+| `me { name }` | `[server] name` |
+| MOTD | `[server] motd` inline |
+| Admin | `admin_name`, `admin_email` |
+| `listen` | `[[listen]] bind`, `tls`, `websocket` |
+| `oper` | `[oper]` single line |
+| Flood / class | `[limits]` |
+| Channel history | `[history]` plus `CHATHISTORY` |
 
-CLI `--bind` / `--tls-bind` replace the listen list when present (handy for lab). Prefer `--config` for standing instances.
+CLI listen flags replace the file's listen list. They exist so a lab can start without editing TOML. A standing instance should use `--config`.
 
+## Clients
 
-## Limits knobs (`[limits]`)
+This repository is the server. Terminal, browser, and native clients are separate work. The server's job is to be boring on the wire: numerics when a command fails, capabilities that match behavior, and a WebSocket port that speaks the same IRC.
 
-| Key | Default | Effect |
-|-----|---------|--------|
-| `max_clients` | 256 | Global concurrent connections |
-| `max_clients_per_ip` | 32 | Per-IP connection cap |
-| `max_line_bytes` | 8192 | Max IRC line including CR/LF |
-| `max_channels` | 1024 | Server-wide channel count |
-| `max_channels_per_client` | 64 | Channels one client may join |
-| `max_members_per_channel` | 512 | Membership cap per channel |
-| `max_topic_bytes` | 390 | Topic text octet cap |
-| `flood_lines_per_window` / `flood_window_secs` | 30 / 10 | Recv flood guard |
-
-History retention: `[history] max_per_channel`, `max_total_rows` (see A6).
-
-
-## WebSocket (`[websocket]`)
-
-| Key | Default | Effect |
-|-----|---------|--------|
-| `allowed_origins` | `[]` | Exact `Origin` allowlist; empty denies browser Origins |
-| `allow_missing_origin` | `true` | Native clients with no Origin |
-| `require_irc_subprotocol` | `true` | Require `Sec-WebSocket-Protocol: irc` |
-
-Admission runs before the WS upgrade. Policy helpers: `ws_policy` / `evaluate_ws_handshake`.
-
-
-## Standalone queries (C1)
-
-Registered clients may issue: `PRIVMSG`/`NOTICE` (channel + nick), `NAMES`, `LIST`, `WHO`, `WHOIS`, `MOTD`, `VERSION`, `LUSERS`. Direct `PRIVMSG` to unknown nick → **401**; missing params → **461**. `NOTICE` stays silent on errors.
-
-
-## Moderation (C2)
-
-- `INVITE nick #chan` — ops (or any member when channel is not +i); numeric **341**; target receives INVITE; invite-only (+i) JOIN needs prior invite (**473** otherwise).
-- `MODE #chan +b/-b mask` — nick or `nick!*@*` masks; JOIN of banned nick → **474**. `MODE #chan b` lists bans (**367/368**).
-- `MODE #chan +i/-i` — invite-only.
-- `PART #chan :reason` and `QUIT :reason` propagate reasons on the fanout line.
+`tools/irctest/` runs a curated slice of [progval/irctest](https://github.com/progval/irctest) against the binary. See [IRCTEST.md](IRCTEST.md).

@@ -1,28 +1,28 @@
-# Full client protocol acceptance matrix — dsc-ircd
+# Client protocol acceptance matrix
 
-**Bar (Mark, 2026-08-03):** full Modern IRC + advertised IRCv3 — **not** a v0 subset.  
-**Tip probed:** F1–F4 landing (query verbs, tags/SASL edges, CHATHISTORY, KILL/WALLOPS)
-**Program:** Tasks [Doc #976](https://tasks.decisionsciencecorp.com/admin/doc.php?id=976) · Matrix [Doc #977](https://tasks.decisionsciencecorp.com/admin/doc.php?id=977) · Epic [#2251](https://tasks.decisionsciencecorp.com/admin/view.php?id=2251)  
-**Standing coverage:** [#2214](https://tasks.decisionsciencecorp.com/admin/view.php?id=2214) (≥90% tarpaulin after code slices)  
-**irctest allowlist:** [`IRCTEST.md`](IRCTEST.md)
+Scorecard for dsc-ircd **0.1.0**. The human manual is [protocol.md](protocol.md). This file says, for each surface, whether the server implements it and which test defends the claim.
 
-## Status legend
+**Bar:** modern client IRC plus every IRCv3 capability the server advertises. A capability in `CAP LS` without a test is a failure, not a roadmap item.
 
 | Status | Meaning |
 |--------|---------|
-| **PASS** | Implemented; in-tree e2e (and curated irctest where listed) defend the claim |
-| **PARTIAL** | Present but incomplete vs Modern/IRCv3 / advertised contract |
-| **MISSING** | Needed for full client compliance; 421 or silent/wrong today |
-| **NON-GOAL** | Explicitly out of this program (not a protocol skip disguised as “later”) |
+| **PASS** | Implemented. An in-tree end-to-end test (and a curated irctest probe, where one is listed) defends it. |
+| **PARTIAL** | Present, and short of the contract we would be willing to advertise. |
+| **MISSING** | Required for the claim, and not implemented. Unknown commands are `421`. |
+| **NON-GOAL** | Out of this program on purpose. |
 
-## Non-goals (do not mark as protocol skips)
+irctest's curated gate and its allowlist: [IRCTEST.md](IRCTEST.md). How to run the suite: [TESTING.md](TESTING.md).
+
+Internal phase names (`F1`, `A6`, task numbers) in the tables below are the original landing trail. They are not part of the wire protocol.
+
+## Non-goals
 
 | Surface | Why out |
 |---------|---------|
 | Server-to-server linking / multi-node history | Network topology; separate epic if needed |
 | In-daemon NickServ / ChanServ | Atheme/Anope **beside** dsc-ircd ([#2160](https://tasks.decisionsciencecorp.com/admin/view.php?id=2160)) |
 | Unreal module ecosystem parity | Ops reference only; not a GPL port checklist |
-| Public zero1 bind | Ops ([#2210](https://tasks.decisionsciencecorp.com/admin/view.php?id=2210)); parallel after Gate A |
+| Choosing a public hostname and opening the port | Deployment. The protocol does not change. See [security.md](security.md). |
 | Ban/invite **exceptions** (`+e` / `+I`) | Optional; not claimed in `optional_behaviors` / IRCTEST allowlist |
 | Caps we do **not** advertise (`multi-prefix`, `echo-message`, `account-notify`, `extended-join`, `labeled-response`, `setname`, `MONITOR`, STS, …) | NAK on REQ is correct until we implement + advertise |
 | Full WHOX field set | **Not advertised** — classic WHO 352 only (F1c honesty) |
@@ -138,21 +138,12 @@ Do **not** advertise a new cap in the same commit that leaves behavior incomplet
 
 ---
 
-## Execute map (children on list #372)
+## Keeping this file honest
 
-| Phase | Task | Status |
-|-------|------|--------|
-| F0 | #2252 | done |
-| F1a | #2253 | done |
-| F1b | #2254 | done |
-| F1c | #2255 | done |
-| F1d | #2256 | done |
-| F2a | #2257 | done |
-| F2b | #2258 | done |
-| F2c | #2259 | done |
-| F3 | #2260 | done |
-| F4 | #2261 | done |
-| F5 | #2262 | curated expand + matrix note |
-| F6 | #2263 | docs closeout |
+When a row changes:
 
-**Order:** F0 → F1 → F2 → F3 → F4 → F5 → F6.
+1. Update the status and the test name in the same change as the code.
+2. Update [protocol.md](protocol.md) if a command, mode, numeric, or capability changed for a client author.
+3. If the row is a newly advertised capability, extend the curated `-k` list in [IRCTEST.md](IRCTEST.md) once that upstream case is green. Do not paper over it with a marker exclusion.
+
+User modes are the open **PARTIAL**. Everything else in the client tables above is **PASS** or an explicit **NON-GOAL**.

@@ -1,38 +1,37 @@
-# irctest (progval) — dsc-ircd controller and curated CI
+# irctest
 
-Decision Science Corp · `dsc-ircd` · Tasks **#2235** (C6) · Doc **#974** Ongoing conformance gate  
-**Full-compliance acceptance matrix:** [`PROTOCOL-MATRIX.md`](PROTOCOL-MATRIX.md) · Tasks Doc **#976** / F0 **#2252**
+[progval/irctest](https://github.com/progval/irctest) is an external IRC conformance suite. This repository ships a controller so that suite can launch the `ircd` binary. We run a curated subset in CI. We do not claim every test in upstream irctest.
 
-This tree ships an in-repo [progval/irctest](https://github.com/progval/irctest) **controller** so CI (and local lab) can drive the real `ircd` binary without forking irctest.
+The acceptance matrix for our own suite is [PROTOCOL-MATRIX.md](PROTOCOL-MATRIX.md).
 
-## Quick start
+## Run it
 
 ```bash
-# One-time: clone irctest somewhere writable
 git clone --depth 1 https://github.com/progval/irctest.git ~/irctest
-pip3 install --user -r ~/irctest/requirements.txt
+python3 -m venv ~/irctest-venv
+~/irctest-venv/bin/pip install -r ~/irctest/requirements.txt
+export PATH="$HOME/irctest-venv/bin:$PATH"
+export IRCTEST_DIR="$HOME/irctest"
 
-# From this repo
+cargo build -p ircd
 bash tools/irctest/run_curated.sh
 ```
 
-Environment:
-
 | Variable | Meaning |
 |----------|---------|
-| `IRCTEST_DSC_IRCD` | Absolute path to the `ircd` binary (default: `target/debug/ircd` after `cargo build -p ircd`) |
-| `IRCTEST_DIR` | irctest checkout (default: `~/irctest`) |
-| `IRCTEST_MARKERS` | Override pytest `-m` expression |
-| `IRCTEST_K` | Override pytest `-k` curated node filter |
-| `IRCTEST_DEBUG_LOGS=1` | Surface server stdout/stderr through irctest |
+| `IRCTEST_DSC_IRCD` | Path to the `ircd` binary. Default: `target/debug/ircd`. |
+| `IRCTEST_DIR` | irctest checkout. Default: `~/irctest`. |
+| `IRCTEST_MARKERS` | Override the pytest `-m` expression. |
+| `IRCTEST_K` | Override the pytest `-k` name filter. |
+| `IRCTEST_DEBUG_LOGS=1` | Show server stdout and stderr. |
 
-Controller module: `tools/irctest/dsc_ircd.py` (`--controller dsc_ircd` with `PYTHONPATH=tools/irctest`).
+The controller module is `tools/irctest/dsc_ircd.py`. The runner puts `tools/irctest` on `PYTHONPATH` and passes `--controller dsc_ircd`.
 
-## Curated CI markers
+## What CI selects
 
-CI job **`irctest`** runs `tools/irctest/run_curated.sh` with:
+The `irctest` job in `.github/workflows/ci.yml` runs `tools/irctest/run_curated.sh`.
 
-**Markers (`-m`):**
+Markers:
 
 ```text
 (RFC1459 or RFC2812 or modern or IRCv3)
@@ -40,49 +39,57 @@ and not Ergo and not deprecated and not strict
 and not services and not implementation-specific
 ```
 
-**Name filter (`-k`) — curated probes that must stay green:**
+Name filter. These probes are part of the gate:
 
-| Probe | Why it is in the gate |
-|-------|------------------------|
-| `testPing` / `testPingNoToken` | Modern PING/PONG + server name |
-| `testPrivmsg` / `testPrivmsgToUser` / `testPrivmsgNonexistentChannel` | Core message routing |
-| `testJoinNamreply` | JOIN + RPL_NAMREPLY shape |
-| `testInvalidCapSubcommand` / `testNoReq` | CAP negotiation without REQ of unsupported caps |
-| `testQuit` / `testQuitDisconnects` / `testQuitErrors` | QUIT fanout, ERROR ack, TCP close |
-| `testPart` | Channel leave |
-| `testAway` / `testAwayAck` / `testAwayPrivmsg` / `testAwayWhois` | AWAY set/clear + 301 on PRIVMSG/WHOIS (F1a) |
-| `testAwayNotify` / `testAwayNotifyOnJoin` | IRCv3 `away-notify` peer + join (F1a) |
+| Probe | Why |
+|-------|-----|
+| `testPing` / `testPingNoToken` | `PING` / `PONG`, including the no-token case |
+| `testPrivmsg` / `testPrivmsgToUser` / `testPrivmsgNonexistentChannel` | Channel and user routing |
+| `testJoinNamreply` | `JOIN` and `RPL_NAMREPLY` |
+| `testInvalidCapSubcommand` / `testNoReq` | `CAP` without requesting unknown caps |
+| `testQuit` / `testQuitDisconnects` / `testQuitErrors` | `QUIT`, `ERROR`, TCP close |
+| `testPart` | Leave a channel |
+| `testAway` / `testAwayAck` / `testAwayPrivmsg` / `testAwayWhois` | `AWAY`, `305`/`306`, `301` |
+| `testAwayNotify` / `testAwayNotifyOnJoin` | `away-notify` to peers and on join |
 
-**F5 note (tip `6f88c38`):** USERHOST/ISON/TIME/INFO, message-tags 417, SASL edges, full CHATHISTORY, KILL/WALLOPS are defended by in-tree `protocol_f_slices_e2e`. Promote matching irctest modules into `-k` when individually green — WS harness remains UNSUPPORTED in the controller (daemon WS still PASS).
+Advertised capabilities are **not** excluded with a marker like `-m 'not message-tags'`. Their full irctest modules are not all in the `-k` list yet. Wire behavior for those caps is gated by `protocol_c3_e2e`, `protocol_c7_e2e`, `protocol_f1a_e2e`, and `protocol_f_slices_e2e`. When an individual irctest case is green, add it to `-k`. Do not hide an advertised cap by excluding its marker.
 
-**Advertised IRCv3 caps** (`cap-notify`, `message-tags`, `server-time`, `account-tag`, `batch`, plus conditional `sasl` / `draft/chathistory`) are **not** excluded with `-m 'not message-tags …'`. Full irctest modules for those caps are not yet all in the curated `-k` list; wire conformance for advertised caps remains gated by in-tree **`protocol_c3_e2e`** / **`protocol_f_slices_e2e`** (and Gate A A1: do not advertise without tests). Expand `-k` as individual irctest cases go green — never hide an advertised cap behind a marker exclusion.
+## Allowlist
 
-## Allowlist — intentionally unsupported (irctest)
-
-Controllers raise `NotImplementedByController` (or omit optional behaviors) for surfaces we are **not** claiming. This is the documented allowlist for C6:
+The controller raises `NotImplementedByController`, or simply does not claim the behavior, for surfaces this server does not implement.
 
 | Area | Status | Notes |
 |------|--------|-------|
-| WebSocket listeners | Unsupported in controller | Binary has WS; irctest websocket harness not wired |
-| Connection `PASS` / link password | Optional | Supported when `server.password` set (F1d); lab configs usually empty |
-| Services packages (Anope/Atheme) | Unsupported | No services controller; `-m 'not services'` |
-| STS | Unsupported | `supports_sts = False`; cap not advertised |
-| `multi-prefix`, `echo-message`, `account-notify`, `extended-join`, `labeled-response`, `setname`, `MONITOR`, … | Not advertised | Do not REQ in curated probes; NAK is correct if a client asks |
-| `away-notify` | **Advertised** (F1a) | In-tree `protocol_f1a_e2e`; promote irctest AWAY modules into `-k` when green |
-| Ban/invite exception modes (`+e` / `+I`) | Optional behavior absent | Not in `optional_behaviors` |
-| Ergo / Sable / implementation-specific tests | Out of scope | Marker-excluded |
+| WebSocket in irctest | Unsupported in the controller | The daemon speaks WebSocket. The irctest WebSocket harness is not wired. |
+| Services (Anope / Atheme) | Unsupported | No services controller. Marker `not services`. |
+| STS | Unsupported | Not advertised. `supports_sts = False`. |
+| `multi-prefix`, `echo-message`, `account-notify`, `extended-join`, `labeled-response`, `setname`, `MONITOR` | Not advertised | `CAP REQ` of these is a `NAK`. |
+| `+e` / `+I` | Absent | Not in `optional_behaviors`. |
+| Ergo- or implementation-specific tests | Out of scope | Excluded by marker. |
+| Connection `PASS` | Optional | Implemented when `server.password` is set. Lab configs leave it empty. |
 
-If a future change **advertises** a new cap, add focused in-tree e2e **and** promote matching irctest cases into the curated `-k` list in the same slice.
+`away-notify` **is** advertised. It is covered in-tree by `protocol_f1a_e2e` and by the AWAY probes in the `-k` list.
 
-## Controller capabilities declaration
+## What the controller tells irctest
 
-`DscIrcdController.capabilities` matches `BASE_CAPS` in `crates/ircd/src/session/cap.rs` (minus `cap-notify`, which irctest does not model as a `Capabilities` enum member):
+`DscIrcdController.capabilities` in `tools/irctest/dsc_ircd.py` declares the base set the binary advertises, using irctest's `Capabilities` enum:
 
 - `message-tags`
 - `server-time`
 - `account-tag`
 - `batch`
+- `away-notify`
 
-Optional behavior claimed: `CAP_REQ_MINUS` (runtime `CAP REQ -cap`).
+`cap-notify` is always on in the daemon and is not a member of that enum. `sasl` and `draft/chathistory` are omitted here because the generated lab config has no accounts and sets `[history] enabled = false`.
 
-Lab config uses server name **`My.Little.Server`** (irctest PONG / source expectation), plaintext listen on the port irctest allocates, oper `operuser`/`operpassword`, and **no** accounts/history blocks so CI does not advertise `sasl` / `draft/chathistory` unless a later curated probe needs them.
+Optional behavior claimed: `CAP_REQ_MINUS` (a `CAP REQ` token may start with `-`). `supports_sts` is false. `supported_sasl_mechanisms` is empty for this config.
+
+The lab config this controller writes uses server name `My.Little.Server` (irctest expects that in `PONG`), a plaintext port that irctest allocates, operator `operuser` / `operpassword`, and no accounts or history block. CI therefore does not advertise `sasl` or `draft/chathistory` unless a later probe asks for a config that enables them.
+
+## Changing the gate
+
+If you advertise a new capability:
+
+1. Add the in-tree end-to-end test.
+2. Add the matching irctest cases to `-k` once they pass against this controller.
+3. Update the allowlist table on this page if something moved from "not claimed" to "claimed".

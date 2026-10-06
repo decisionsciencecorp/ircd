@@ -1,185 +1,187 @@
-# Moderation & ops handbook
+# Operations
 
-You’re holding a kick or a ban because someone is wrecking a channel. This is the map. Network kill is a different belt — read the escalate ladder before you pull it.
+You are holding a kick or a ban because someone is wrecking a channel. This is the map for dsc-ircd. Network kill is a different belt. Read the ladder at the bottom before you use it.
 
-**Daemon:** `dsc-ircd` ([`decisionsciencecorp/ircd`](https://github.com/decisionsciencecorp/ircd)).  
-**Services (product decision):** NickServ / ChanServ live in **Atheme or Anope beside** the IRCd — not a mini-NickServ inside the daemon.
+The daemon is this repository. NickServ and ChanServ are not inside it. They live in Atheme or Anope beside the process. Deployment hostnames, certificates, and passwords live in your config file, not in this handbook.
 
-Deployment hostnames, certs, O-line secrets, and lab passwords belong in **your** config and runbooks — not in this handbook.
+Wire details and numerics are in [protocol.md](protocol.md). The public-bind checklist is [security.md](security.md).
 
----
+## Three belts
 
-## Two toolbelts
+| Belt | Who | Where it lives |
+|------|-----|----------------|
+| Channel modes, `KICK`, `TOPIC`, `INVITE` | Channel ops (`+o`) | This daemon |
+| `OPER`, `KILL`, `WALLOPS` | The single O-line | This daemon |
+| Register, identify, channel ownership | Services admins | Atheme or Anope next to the daemon |
 
-| Belt | Who | Job |
-|------|-----|-----|
-| Channel modes + KICK / TOPIC / INVITE | Channel ops (`+o`) | Room-level discipline. In the daemon. |
-| OPER + KILL + WALLOPS | IRC operators (O-line) | Network-level. In the daemon. |
-| NickServ / ChanServ / friends | Services package | Register, identify, channel ownership. **Beside** the daemon. |
-
-Built-in SASL PLAIN accounts in `config.toml` (`[accounts]`) are a **bootstrap / test** path. Production register/identify should use the services package. Do not teach end users “edit the server config to get a nick.”
-
----
+`[[accounts]]` in the config is a bootstrap SASL table for tests. It is not how people get a nick. Do not tell users to ask an operator to edit the server config.
 
 ## Roles
 
-**Channel op (`+o`):** first creator of a channel gets ops in v0. Kick, topic (when `+t`), `+b` / `+i` / invite, hand out more ops. Everyday belt.
+**Channel op.** The first person to join a new channel gets `+o`. They can kick, set the topic while `+t` is on (the default), set `+b` and `+i`, invite, and grant `+o` to someone else. Ops belong to the connection, not the nick string. Renaming does not hand ops to whoever takes the old nick. Stealing a nick does not steal the channel.
 
-**IRC operator (`OPER`):** network staff. Kick where you have presence, `KILL` a nick off the net, `WALLOPS` other opers. Wrong password → 464. Disabled O-line → 491. Prefer TLS for OPER and SASL in any public deployment — plaintext auth is a non-starter.
+**IRC operator.** One name and one plaintext password in `[oper]`. Success is `381`. A wrong password is `464`. `enabled = false` is `491`. An operator can kick where they are present, `KILL` a nick off the server, and `WALLOPS` other operators. On a public port, `OPER` belongs on TLS. Set `require_tls_for_auth` or `production`.
 
-**Services admin:** Atheme/Anope staff. Nick fights, founder recovery, drop/restore. Escalate here when the problem is *identity* or *ownership*, not a one-channel scuffle.
+**Services admin.** Nick fights and founder recovery. `KILL` does not transfer an account. Send identity problems to services.
 
----
+There is no voice (`+v`) and no halfop. `PREFIX` is `(o)@` only.
 
-## Register & identify
+## Register and identify
 
-Assumes services sit next to `dsc-ircd` on your network.
+When services are installed next to the daemon:
 
-1. Connect over **TLS**.
-2. Pick a nick. Taken? Pick another — don’t NICK-spam services.
-3. Register with NickServ (Atheme vs Anope differ in flags, not in the idea).
-4. Identify on later connects (or SASL once wired to the client).
-5. Channel you mean to keep → register with ChanServ once the name is the long-term one.
+1. Connect with TLS.
+2. Pick a nick. If it is taken, pick another.
+3. Register with NickServ. The exact command depends on Atheme versus Anope.
+4. Identify on later connections, or use SASL once the client and services are wired.
+5. Register the channel with ChanServ when the name is the one you mean to keep.
 
-Daemon-only SASL (`[accounts]`) is for smoke tests and early bootstrap. Rotate those passwords before any public bind.
+Until that package exists, the only accounts are `[[accounts]]` and SASL PLAIN. Rotate those passwords before anyone but you can reach the port. See [security.md](security.md).
 
-Optional connection `PASS` (server password in config): wrong password blocks registration with 464. That’s a front door, not a ban.
-
----
+A `[server] password`, if set, is a connection front door. Wrong `PASS` is `464` and registration does not finish. It is not a ban and not an account.
 
 ## Channel discipline
 
+New channels start as `+nt`: people outside the channel cannot send, and only ops can change the topic.
+
 ### Kick
 
-```
+```text
 KICK #channel nick :reason here
 ```
 
-Need channel ops (or OPER). Not op → 482. Reasons show up on the wire — write them like you’ll see them in a screenshot tomorrow.
+You need `+o` or an O-line. Otherwise `482`. The reason is part of the fanout. Write it as if it will be screenshotted.
 
-Kick removes them from the channel. They can rejoin unless you ban.
+Kick removes them from the channel. They can rejoin until you ban.
 
 ### Ban
 
-```
-MODE #channel +b nick!user@host
+```text
+MODE #channel +b nick
+MODE #channel +b nick!*@*
 ```
 
-Tightest mask that stops the abuse without collateral. List: `MODE #channel +b`. Remove: `-b`. Banned JOIN → 474. Ban ≠ network kill.
+Use the tightest mask that stops the abuse. List bans with `MODE #channel b` (`367`, then `368`). Remove with `MODE #channel -b nick!*@*`. A banned `JOIN` is `474`.
+
+Bans are in memory. A restart clears them. There is no exception list (`+e`) and no invite-exception list (`+I`).
+
+A ban is not a network kill.
 
 ### Invite-only
 
-```
+```text
 MODE #channel +i
 INVITE nick #channel
 ```
 
-`+i` blocks uninvited joins (473). Not op → 482.
+`+i` makes an uninvited join `473`. You must be an op to set the mode (`482` otherwise). On a channel that is not `+i`, any member may `INVITE`. Success is `341`, and the target sees `INVITE`. The invite is consumed on join.
 
 ### Topic
 
-```
-TOPIC #channel :plain text, no control characters
+```text
+TOPIC #channel :plain text
 ```
 
-With `+t` (default), only ops set topic. Control characters are rejected — don’t paste binary into a topic.
+With `+t`, only ops can set it. Control characters are rejected. The length cap is `max_topic_bytes` (default 390).
 
-### Voice / more ops
+### More ops
 
-```
+```text
 MODE #channel +o othernick
-MODE #channel +v othernick
+MODE #channel -o othernick
 ```
 
-Hand out ops when you trust someone to kick *and* to stop kicking. Voice is the lighter lever.
+Give ops to someone you trust to kick and to stop kicking. Several ops can be set at once: `MODE #channel +oo alice bob`.
 
----
+`MODE #channel` with no flags replies `324` with the current modes.
 
-## Network levers (OPER)
+## Network levers
 
-### Become an oper
+### Become an operator
 
-```
+```text
 OPER <oline-name> <password>
 ```
 
-Prefer TLS when the deployment is public. Success → 381. O-line secrets live in server config — not NickServ passwords. Rotate them like root.
+The name and password are `[oper]` in the config. Prefer TLS whenever the host is not localhost. The password is stored in cleartext. Keep the file mode `0600` and rotate it like a root password.
 
 ### Kill
 
-```
+```text
 KILL nick :reason
 ```
 
-Oper-only. Non-opers → 481. Use for network abuse, open proxies mid-attack, compromised bots — **not** “I disagree in #general.” If kick + ban would do it, kick + ban.
+Operators only. Anyone else gets `481`. The target is disconnected with `ERROR`.
+
+Use this for network abuse: open proxies in the middle of an attack, compromised bots, a client that is ignoring channel bans by rejoining faster than you can type. If kick plus ban would do it, kick plus ban.
+
+`KILL` does not ban the host. They can reconnect with another nick unless something else stops them.
 
 ### Wallops
 
+```text
+WALLOPS :heads up for other operators
 ```
-WALLOPS :heads up for other opers
-```
 
-Oper-only. Coordinated response, not venting.
+Operators only. It is how you coordinate. It is not a second channel for arguments.
 
----
+## Limits you will feel
 
-## Escalate — ladder, not panic
+These are config, not modes. Defaults are in [configuration.md](configuration.md).
 
-1. **One bad actor, one room** → kick → ban if they return → topic note if the room needs a rule reminder.
-2. **Same actor, many rooms** → bans per channel, or OPER kill if they’re hopping faster than bans. WHOIS the nick!user@host before you kill.
-3. **Stolen nick / account fight** → services staff. Daemon KILL does not transfer ownership.
-4. **Server misconfig / auth outage / TLS down** → daemon / infra ops. Not a kick problem.
-5. **Legal / safety / CSAM / credible threat** → stop playing IRC admin. Preserve logs. Escalate to whoever owns legal/safety for your network. Do not “quietly MODE +b” and hope.
+| Symptom | Knob |
+|---------|------|
+| New connections dropped immediately | `max_clients`, `max_clients_per_ip` |
+| Client kicked for talking too fast | `flood_lines_per_window`, `flood_window_secs` (default 30 lines / 10 seconds) |
+| Join fails on a huge channel | `max_members_per_channel` (512) |
+| User cannot join another channel | `max_channels_per_client` (64) |
+| Server will not create another channel | `max_channels` (1024) |
+| Unregistered socket disappears | `registration_timeout_secs` (60) |
+| Quiet client disappears | `idle_timeout_secs` (off unless you set it) |
 
-Unsure which belt? Ask in the oper channel before you KILL. A wrong kill is louder than a wrong kick.
+A full outbox (64 pending lines) drops messages for that one slow client. The channel does not wait for them.
 
----
+## Escalate
 
-## Config vs this handbook
+1. One person, one room. Kick. Ban if they come back. Set the topic if the room needs the rule written down.
+2. Same person, many rooms. Ban per channel. `KILL` only if they are hopping faster than bans can be set. `WHOIS` the nick before you kill.
+3. Stolen nick or account fight. Services. A daemon `KILL` does not move ownership.
+4. Server down, TLS expired, nobody can authenticate. That is the host, not a kick.
+5. Legal, safety, credible threats. Stop playing IRC admin. Keep logs. Hand it to whoever owns safety for the network.
 
-| Concern | Where it lives |
-|---------|----------------|
-| Listen addresses, TLS certs, WebSocket bind | Your `config.toml` + deploy notes |
-| O-line names / passwords | `[oper]` in config — never commit real secrets |
-| Bootstrap SASL test accounts | `[accounts]` — lab only; rotate before public |
-| Services host / NickServ policy | Atheme/Anope install next to the daemon |
-| Lab smoke endpoints | Separate lab runbook (not this file) |
+If you are unsure which belt you are holding, ask in the operator channel before `KILL`. A wrong kill is louder than a wrong kick.
 
-Do not paste OPER passwords into public channels. Do not reuse lab O-lines on a public hostname.
+## What this daemon will not do
 
----
+- No NickServ inside the process.
+- No silent success. A moderation command that fails returns a numeric. If a client shows success anyway, fix the client.
+- No voice, no channel keys, no persistent bans across restart.
 
-## What we will not do in the daemon
-
-- **No in-daemon NickServ.** Services stay beside the IRCd. Product decision, not a missing-feature ticket.
-- **No silent drops** for supported moderation verbs — you get a numeric. Client lies about success → fix the client.
-- **No Wikipedia ops manual.** This stays short on purpose. Unreal module folklore is reference material, not a v0 checklist.
-
----
+Services commands stay on the services one-pager, next to this file, once that package is actually installed.
 
 ## Cheat sheet
 
-```
+```text
 OPER name pass
 KILL nick :reason
 WALLOPS :message
 
 KICK #chan nick :reason
-MODE #chan +b nick!user@host
-MODE #chan -b nick!user@host
-MODE #chan +b
+MODE #chan +b nick!*@*
+MODE #chan -b nick!*@*
+MODE #chan b
 MODE #chan +i
+MODE #chan -i
 INVITE nick #chan
 TOPIC #chan :text
 MODE #chan +o nick
+MODE #chan -o nick
 WHOIS nick
 ```
 
-Services commands are package-specific — keep their one-pager next to this file when services are live.
+## Related
 
----
-
-## Related (in-repo)
-
-- Lab smoke endpoints / test credentials: `docs/LAB.md` (deployment-specific — treat as sensitive)
-- Protocol / testing notes: `docs/TESTING.md`, `docs/REFERENCE.md`
+- [protocol.md](protocol.md) — numerics and capabilities
+- [security.md](security.md) — before a public bind
+- [configuration.md](configuration.md) — the knobs named above
+- [LAB.md](LAB.md) — private lab layout, without live passwords

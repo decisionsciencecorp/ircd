@@ -1,5 +1,6 @@
 # dsc-ircd example config (TOML).
-# Unreal admins: see docs/REFERENCE.md § Config mapping.
+# Full key reference: docs/configuration.md
+# Unreal-shaped mapping: docs/REFERENCE.md
 
 [server]
 name = "ircd.dsc.local"
@@ -8,6 +9,8 @@ admin_name = "Mark Hopkins"
 admin_email = "ops@example.com"
 max_nick_length = 30
 max_channel_length = 50
+# Optional connection password. Empty (omit the key) means PASS is not required.
+# password = "front-door-secret"
 
 # Plaintext lab listen (Unreal: listen { ip *; port 6667; })
 [[listen]]
@@ -64,3 +67,25 @@ max_clients = 256
 max_clients_per_ip = 32
 flood_lines_per_window = 30
 flood_window_secs = 10
+# max_line_bytes = 8192
+# max_channels = 1024
+# max_channels_per_client = 64
+# max_members_per_channel = 512
+# max_topic_bytes = 390
+
+# Public-host posture. production = true refuses any plaintext listen and
+# requires TLS for SASL and OPER. Lab default is false.
+# [security]
+# production = false
+# require_tls_for_auth = true
+# registration_timeout_secs = 60
+# idle_timeout_secs = 0
+# handshake_timeout_secs = 15
+# max_handshake_inflight = 64
+
+# Browser WebSocket policy. An empty allowed_origins list denies every
+# Origin header. Native clients with no Origin are allowed by default.
+# [websocket]
+# allowed_origins = ["https://chat.example.com"]
+# allow_missing_origin = true
+# require_irc_subprotocol = true

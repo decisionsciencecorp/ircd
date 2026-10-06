@@ -1,190 +1,114 @@
-# Testing — what we run, and what it caught
+# Testing
 
-Decision Science Corp · `dsc-ircd` · Tasks list **369** (Server — testing & coverage)
+The suite is the definition of what the server claims. A behavior change needs a test in the same change. A new `CAP LS` token needs a test before it is advertised.
 
-Heavy `cargo` work runs on **NewDev** (`64.95.11.220`), typically under `/root/projects/ircd-test`. Termux is the edit host; do not expect tarpaulin/fuzz builds there.
+GitHub Actions (`.github/workflows/ci.yml`) runs the gates below on every push and pull request to `main`.
 
-## Bars
+## Gates
 
-| Gate | Tool | Pass criteria |
-|------|------|----------------|
-| Coverage | `cargo tarpaulin` | ≥ **90%** on `ircd` + `ircd-core` (CLI/`main`/`ws`/`tls`/`ircc` excluded) |
-| Property | `proptest` | Parser / tag helpers never panic; constructed round-trips |
-| Docs | `cargo test --doc` | Every ` ``` ` example is a real test |
-| Perf | `cargo bench -p ircd` | History + routing benches compile and run |
-| Fuzz | `cargo +nightly fuzz` | Harnesses build; overnight corpus optional |
+| Gate | Command | Pass |
+|------|---------|------|
+| Format | `cargo fmt --all -- --check` | clean |
+| Clippy | `cargo clippy -p ircd -p ircd-core --tests -- -D warnings` | clean, with the allow list in the workflow |
+| Tests | `cargo test -p ircd -p ircd-core --tests --lib` | all green |
+| Doc tests | `cargo test -p ircd -p ircd-core --doc` | every rustdoc example runs |
+| Audit | `cargo audit` | no known advisory in the pinned tree |
+| Soak | `bash tools/c5_soak.sh` | short connect / join / privmsg loop |
+| Coverage | `cargo tarpaulin` as below | **≥ 90%** on `ircd` + `ircd-core` |
+| irctest | `bash tools/irctest/run_curated.sh` | curated probes in [IRCTEST.md](IRCTEST.md) |
 
-## Commands (NewDev)
+Coverage excludes the smoke client and the bind paths that need a live socket or a certificate dance:
 
 ```bash
-source /root/.cargo/env
-cd /root/projects/ircd-test   # or clone path
-
-# Unit + integration + e2e
-cargo test -p ircd -p ircd-core --tests --lib
-
-# Doc examples
-cargo test -p ircd -p ircd-core --doc
-
-# Coverage (fail under 90)
 cargo tarpaulin -p ircd -p ircd-core \
   --exclude-files '**/ircc/**' \
   --exclude-files '**/ircd/src/main.rs' \
   --exclude-files '**/ircd/src/ws.rs' \
   --exclude-files '**/ircd/src/tls.rs' \
   --ignore-tests --fail-under 90 --timeout 300
-
-# Benches
-cargo bench -p ircd
-
-# Fuzz smoke (needs nightly + cargo-fuzz)
-cargo +nightly fuzz run rawline_parse -- -runs=10000
-cargo +nightly fuzz run tags_adapt -- -runs=10000
-# Overnight: omit -runs and leave running; corpus under fuzz/corpus/
 ```
 
-Verified snapshot (2026-08-02, NewDev): **90.15%** (`1263/1401`) with `--fail-under 90`.
+`main`, the TLS acceptor, and the WebSocket acceptor stay outside that 90% number. Protocol behavior is tested through in-process duplex I/O in `crates/ircd/tests/`, which drives `session` without binding a port. Do not exclude `tests/` in a way that skips running them. `--ignore-tests` only keeps test-only lines out of the percentage.
+
+Benches and fuzz are local tools. CI does not run them.
+
+```bash
+cargo bench -p ircd
+cargo +nightly fuzz run rawline_parse -- -runs=10000
+cargo +nightly fuzz run tags_adapt -- -runs=10000
+```
+
+Fuzz needs nightly and `cargo-fuzz`. Drop `-- -runs=…` for a long run. The corpus lives under `fuzz/corpus/`. The fuzz package is outside the workspace (`workspace.exclude = ["fuzz"]` and an empty `[workspace]` in `fuzz/Cargo.toml`). That split is what lets `cargo fuzz` run.
 
 ## Layout
 
-| Path | Role |
-|------|------|
-| `crates/ircd-core` unit + doc tests | `RawLine`, numerics, tag helpers |
-| `crates/ircd-core/tests/rawline_proptest.rs` | Arbitrary bytes / strings → parse; constructed round-trip |
-| `crates/ircd/src/{config,history,state,session}.rs` | Unit tests (incl. CAP `apply_cap_req`) |
-| `crates/ircd/tests/protocol_*_e2e.rs` | Duplex e2e for common protocol routes |
-| `crates/ircd/benches/` | CHATHISTORY / routing Criterion benches |
-| `fuzz/` | libFuzzer targets `rawline_parse`, `tags_adapt` |
-| `tarpaulin.toml` | Default exclude + fail-under |
+| Path | What it covers |
+|------|----------------|
+| `crates/ircd-core` unit and doc tests | `RawLine`, numerics, tags, casemap |
+| `crates/ircd-core/tests/rawline_proptest.rs` | Arbitrary input must not panic; constructed lines round-trip |
+| `crates/ircd/src/**` unit tests | Config validation, history queries, CAP REQ, WebSocket policy |
+| `crates/ircd/tests/protocol_*_e2e.rs` | Duplex end-to-end for commands and caps |
+| `crates/ircd/tests/gate_a_acceptance_e2e.rs` | The public-host acceptance pack |
+| `crates/ircd/benches/` | History and routing (`criterion`) |
+| `fuzz/fuzz_targets/` | `rawline_parse`, `tags_adapt` |
+| `tarpaulin.toml` | Default excludes and the 90% floor |
+| `tools/c5_soak.sh` | Short external smoke against a spawned binary |
+| `tools/c1_irssi_smoke.sh` | Optional irssi script, not part of CI |
+| `tools/irctest/` | Controller and curated irctest runner |
 
-E2E uses in-process duplex I/O (`tests/common/mod.rs`) so coverage attributes to `session` without a live TCP bind.
+End-to-end tests use `tests/common/mod.rs`. Coverage lands on `session` because the test calls the library, not a child process.
 
-## What testing caught
+## Gate A
 
-### 1. IRCv3 `@tags` were treated as the command (`ircd-core`)
-
-**Symptom:** Lines like `@time=… :nick PRIVMSG #c :hi` failed to parse as `PRIVMSG`.
-
-**Cause:** `RawLine::parse` did not strip a leading `@tags` block before reading the command token.
-
-**Fix:** Parse tags into `RawLine.tags`, then command/params from the remainder. Covered by unit + doc + proptest + fuzz target.
-
-### 2. Duplicate / wrong `server-time` tagging (`tags`)
-
-**Symptom:** Helpers could re-prepend `time=` or drop sibling tags inconsistently when adapting bus lines for CAP combinations.
-
-**Fix:** `tag_server_time` / `adapt_bus_line` / `prepend_tag` consolidated in `ircd-core::tags` with explicit unit tests (no duplicate `time=`, keep `msgid`/`account` when caps allow, strip when neither CAP is on).
-
-### 3. Coverage undercount from `tokio::select!` (`session`)
-
-**Symptom (historical):** Tarpaulin under-attributed `select!` branches. A6 temporarily used `try_recv`+timed reads; **B1 restored `select!`** for correct scheduling — keep e2e dense enough to hold ≥90%.
-
-**Symptom (was):** Tarpaulin reported session coverage far below real exercise of the read/bus loop (~89.99% overall stuck one line under the bar).
-
-**Cause:** `select!` branches are poorly attributed under LLVM coverage for this crate.
-
-**Fix:** Prefer `bus_rx.try_recv()` plus a timed `read_line` in the session loop so hits land on real statements. Additional CAP logic extracted to `apply_cap_req` with sync unit tests so REQ ACK/NAK/disable paths count.
-
-### 4. Workspace membership broke `cargo fuzz`
-
-**Symptom:** `cargo fuzz run` failed: fuzz package believed it was in the workspace without being a member.
-
-**Fix:** Root `workspace.exclude = ["fuzz"]` and an empty `[workspace]` table in `fuzz/Cargo.toml`.
-
-## Scope notes
-
-- **`main` / TLS acceptor / WebSocket** stay out of the 90% bar (lab bind paths); protocol truth lives in `session` + `ircd-core`.
-- **proptest** finds panic/invariant bugs; **fuzz** finds parser crashes and weird UTF-8/byte sequences overnight — keep both.
-- Integration tests still appear in some tarpaulin line totals; `--ignore-tests` reduces noise but e2e must remain *run* (do not `--exclude-files '**/tests/**'` if that skips executing them).
-
-## Gate A acceptance pack (A9)
-
-Single adversarial suite covering public-host blockers for slices **A1–A8 + A10–A12**:
+One adversarial test file for the bugs that make a public bind unsafe:
 
 ```bash
 cargo test -p ircd --test gate_a_acceptance_e2e
 ```
 
-| Test | Slice |
-|------|-------|
-| `a1_cap_ls_has_no_false_ads` | A1 |
-| `a2_nick_steal_does_not_transfer_ops` | A2 |
-| `a3_oversized_line_417` | A3 |
-| `a4_kick_revokes_channel_send` | A4 |
-| `a5_plaintext_sasl_blocked_when_tls_required` | A5 |
-| `a6_session_has_no_lock_across_await` | A6 |
-| `a7_channel_quotas` | A7 |
-| `a8_casemap_and_cap_end` | A8 |
-| `a10_ws_origin_policy` | A10 |
-| `a11_refuse_world_readable_secret` | A11 |
-| `a12_part_nonmember_442` | A12 |
+| Test | What it locks |
+|------|----------------|
+| `a1_cap_ls_has_no_false_ads` | `CAP LS` matches implemented caps |
+| `a2_nick_steal_does_not_transfer_ops` | Ops follow `ClientId`, not the nick string |
+| `a3_oversized_line_417` | Over-long input is rejected |
+| `a4_kick_revokes_channel_send` | A kicked client cannot keep sending |
+| `a5_plaintext_sasl_blocked_when_tls_required` | Auth policy honors TLS-required |
+| `a6_session_has_no_lock_across_await` | The state mutex is not held across await |
+| `a7_channel_quotas` | Channel and membership caps |
+| `a8_casemap_and_cap_end` | ASCII casemap and `CAP END` |
+| `a10_ws_origin_policy` | WebSocket origin rules |
+| `a11_refuse_world_readable_secret` | Keys and the history file must be private |
+| `a12_part_nonmember_442` | `PART` of a channel you are not on |
 
-Must stay green on NewDev before public zero1 bind (with Tasks #2210 / #2193). Also re-run the tarpaulin command in §Coverage after Gate A landings.
+## Routing benches
 
-
-
-## Gate B — member-targeted routing (B1)
-
-Channel fanout uses per-`ClientId` bounded outboxes (`OUTBOX_CAP=64`, `try_send` drop on slow consumers), not broadcast-to-all-subscribers. Session loop is event-driven `tokio::select!` (outbox preferred).
+Channel fanout uses per-connection bounded outboxes (`OUTBOX_CAP` = 64, `try_send` drops on a slow consumer). The session loop waits on that outbox and on the socket.
 
 ```bash
 cargo test -p ircd --test protocol_b1_e2e
 cargo bench -p ircd --bench routing_bench
 ```
 
-Honest fanout sizes: **1 / 10 / 100 / 1000** recipients (`fanout_channel/*`). Snapshot (NewDev, 2026-08-02): ~168 ns / 1.37 µs / 14.1 µs / 172 µs; slow-consumer policy ~486 ns; legacy `bus.send` ~48 ns (not member-accurate).
+The routing bench reports fanout to 1, 10, 100, and 1000 recipients. Treat the numbers as a local snapshot, not a service level.
 
+## irctest
 
+The external suite and the allowlist of things we deliberately do not claim are in [IRCTEST.md](IRCTEST.md). In-tree tests remain the gate for advertised capabilities. irctest is an extra client-shaped check, not a substitute.
 
-## C1b interop smoke
+## Defects this suite was built to keep dead
 
-| Path | Status (2026-08-03) |
-|------|---------------------|
-| Terminal (irssi + tools/c1_irssi_smoke.sh) | Green on NewDev against local plaintext listen |
-| Protocol duplex e2e (protocol_c1_e2e) | Green |
-| Tauri / web IRC | Stub — client repo not in-tree yet; re-run when present |
-| Native Mac client | Stub — same; re-run when present |
+**Tags parsed as the command.** A line like `@time=… :nick PRIVMSG #c :hi` used to fail because the parser treated `@tags` as the verb. `RawLine::parse` now splits tags first. Unit tests, doc tests, proptest, and `rawline_parse` cover it.
 
-Gaps filed: no automated Tauri/Mac harness until those clients exist. Server surface for queries is covered by C1 wire tests.
+**Tag adaptation duplicating `time`.** `tag_server_time`, `adapt_bus_line`, and `prepend_tag` live in `ircd-core::tags`. Tests require a single `time` tag and require `msgid` / `account` to follow the caps the client actually enabled.
 
-## Handler structure (C4 / H-14)
+**`cargo fuzz` and the workspace.** Fuzz crates want to be their own workspace. The root manifest excludes `fuzz/`, and `fuzz/Cargo.toml` declares an empty `[workspace]`.
 
-| Piece | Location |
-|-------|----------|
-| Typed `Command` | `ircd-core::Command` (`command.rs`) — classify `RawLine` before dispatch |
-| CAP / SASL | `session/cap.rs` |
-| Registration welcome | `session/register.rs` |
-| Connection actor + post-register match | `session/mod.rs` |
-| Privatized `Shared` | `state.rs` — fields private; nick/channel/fanout via methods |
+**Coverage and `select!`.** LLVM coverage under-attributes some `tokio::select!` branches. When the overall number sits just under 90%, add a direct unit test of the extracted function before rearranging the session loop. The loop itself stays event-driven. An earlier experiment replaced `select!` with polling to please the profiler. That was reverted. Do not do it again to chase a percentage.
 
-## CI quality gates (C5)
+## Adding a test
 
-GitHub Actions: `.github/workflows/ci.yml`
-
-| Gate | Command |
-|------|---------|
-| fmt | `cargo fmt --all -- --check` |
-| clippy | `cargo clippy -p ircd -p ircd-core --tests -- -D warnings` |
-| tests | `cargo test -p ircd -p ircd-core --tests --lib` |
-| docs | `cargo test -p ircd -p ircd-core --doc` |
-| audit | `cargo audit` (no rustls-pemfile — PEM via `rustls::pki_types`) |
-| soak | `bash tools/c5_soak.sh` |
-| coverage | tarpaulin fail-under **90** (same flags as above) |
-| irctest (C6) | `bash tools/irctest/run_curated.sh` — see **`docs/IRCTEST.md`** |
-
-## irctest (C6)
-
-In-tree controller + curated marker/`-k` gate for [progval/irctest](https://github.com/progval/irctest). Allowlist of intentionally unsupported optionals and the “do not skip advertised caps” rule: **`docs/IRCTEST.md`**.
-
-## Tasks trail
-
-| ID | Slice |
-|----|--------|
-| #2203 | Tarpaulin ≥90% |
-| #2204 | proptest |
-| #2205 | Doc tests |
-| #2206 | cargo bench |
-| #2207 | cargo-fuzz |
-| #2208 | This document |
-
-List: **369** · Project: **48** (Mark × Cody IRC).
+1. Parser or tag invariant: unit test in `ircd-core`, and a fuzz target if the input is attacker-controlled bytes.
+2. Command or numeric: `crates/ircd/tests/protocol_*_e2e.rs`, asserting the numeric and the fanout another client sees.
+3. New capability: behavior test first, then add the name in `advertised_caps`.
+4. Run `cargo test -p ircd -p ircd-core --tests --lib` and `cargo test -p ircd -p ircd-core --doc`.
+5. If you touched session logic, run the tarpaulin command before merging. The floor is 90%.

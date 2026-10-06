@@ -1,7 +1,8 @@
-//! Shared types and small IRC line helpers for the DSC IRCd.
+//! Shared types and IRC line helpers for the DSC IRCd.
 //!
-//! Protocol work stays intentionally thin at bootstrap — grow toward Unreal-class
-//! features without importing Unreal source.
+//! Parsing, casemapping, and the typed [`Command`] enum live here. Session
+//! behavior lives in the `ircd` crate. This is a clean-room implementation:
+//! UnrealIRCd and Ergo are references for behavior, not source.
 //!
 //! # Examples
 //!

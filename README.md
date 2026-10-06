@@ -1,86 +1,75 @@
-# ircd — DSC IRC server (Rust)
+# ircd
 
-Clean-room **Rust** IRC daemon for Decision Science Corp’s Mark × Cody IRC rebuild.
+Single-node IRC daemon written in Rust by Decision Science Corp.
 
-**Reference model:** [UnrealIRCd](https://www.unrealircd.org/) (most supported open-source production IRCd).  
-**IRCv3 design notes:** [Ergo](https://github.com/ergochat/ergo).  
-**Not** a git/source fork of Unreal (GPL-2.0) — see [`docs/REFERENCE.md`](docs/REFERENCE.md).
+It speaks modern client-to-server IRC and the IRCv3 capabilities it advertises: capability negotiation, message tags, server time, account tags, batch, away-notify, SASL PLAIN, and draft CHATHISTORY. Listeners are plaintext TCP, TLS, WebSocket, and WebSocket-over-TLS.
 
-## Status
+The feature model is [UnrealIRCd](https://www.unrealircd.org/). The IRCv3 shape follows notes from [Ergo](https://github.com/ergochat/ergo). This tree is a clean-room Rust program. It does not contain Unreal or Ergo source. See [docs/REFERENCE.md](docs/REFERENCE.md).
 
-Bootstrap. Speaks enough IRC to accept a client, register a nick, and echo on a test channel. Supports **plaintext** / **TLS** / **WebSocket** / **WSS** binds, IRCv3 **CAP**, multi-user channels, a minimal ops toolkit (**OPER**, channel **+o/+n/+t**, **TOPIC**, **KICK**, **MODE**), sqlite **channel history** (`CHATHISTORY LATEST` + JOIN auto-replay), **SASL PLAIN** against built-in `[[accounts]]`, and basic **connection/flood limits** (`[limits]`).
+Version **0.1.0**. One process, one machine, no server-to-server linking. NickServ and ChanServ are not inside this binary. Put Atheme or Anope beside it when a network needs services.
+
+## Documentation
+
+| Guide | Read it for |
+|-------|-------------|
+| [Getting started](docs/getting-started.md) | Build, run, connect |
+| [Configuration](docs/configuration.md) | Every TOML key and the CLI |
+| [Protocol](docs/protocol.md) | Commands, modes, numerics, capabilities |
+| [Operations](docs/OPS-HANDBOOK.md) | Ops, bans, kills, escalation |
+| [Security](docs/security.md) | What a public bind has to get right |
+| [Architecture](docs/architecture.md) | Crates, sessions, fanout, history |
+| [Smoke client](docs/client.md) | The `ircc` CLI |
+| [Testing](docs/TESTING.md) | How contributors run the suite |
+| [irctest](docs/IRCTEST.md) | External conformance gate |
+| [Acceptance matrix](docs/PROTOCOL-MATRIX.md) | What is implemented, partial, or out of scope |
+| [Lab recipe](docs/LAB.md) | How to stand up a private lab |
+| [Doc index](docs/README.md) | The same map, with a reading order |
+
+`config.example.toml` is a commented lab config. It is not a production config.
 
 ## Quick start
 
-```bash
-# terminal A — plaintext lab (CLI) or --config ./config.example.toml
-cargo run -p ircd -- --bind 127.0.0.1:6667
+You need a recent stable Rust toolchain (edition 2021). SQLite is bundled through `rusqlite`; you do not install a system SQLite library to build.
 
-# terminal B — CLI smoke client (not a product GUI)
+```bash
+cargo run -p ircd -- --bind 127.0.0.1:6667
+```
+
+Second terminal:
+
+```bash
 cargo run -p ircc -- --host 127.0.0.1 --port 6667 --nick otto --join '#test' --msg 'hello' --quit
 ```
 
-### TLS (lab self-signed)
+A standing config:
 
 ```bash
-# once
-cargo run -p ircd -- gen-cert --out ./certs --cn ircd.dsc.local
-
-# terminal A — plaintext + TLS
-cargo run -p ircd -- \
-  --bind 127.0.0.1:6667 \
-  --tls-bind 127.0.0.1:6697 \
-  --tls-cert ./certs/cert.pem \
-  --tls-key ./certs/key.pem
-
-# terminal B — TLS smoke (accepts any cert; lab only)
-cargo run -p ircc -- --tls --host 127.0.0.1 --port 6697 --nick otto \
-  --join '#test' --msg 'hello tls' --quit
+cargo run -p ircd -- --config ./config.example.toml
 ```
 
-Production networks should use real certificates; `gen-cert` is for local lab only.  
-`--tls` on `ircc` **disables certificate verification** — never point that at the public internet as a trust model.
-
-WebSocket (browser/Tauri path):
-
-```bash
-cargo run -p ircd -- --bind 127.0.0.1:6667 --ws-bind 127.0.0.1:7667
-# client: ws://127.0.0.1:7667 — send IRC lines as text frames
-```
-
-CAP smoke:
-
-```bash
-cargo run -p ircc -- --cap --host 127.0.0.1 --port 6667 --nick otto \
-  --join '#test' --msg 'hello' --quit
-```
-
-Interactive: omit `--quit` and type `/join #test`, `/msg #test hi`, or bare lines (PRIVMSG to joined channel).
+TLS, WebSocket, and capability negotiation are in [Getting started](docs/getting-started.md).
 
 ## Workspace
 
 | Crate | Role |
 |-------|------|
-| `ircd` | Binary — listen loop, TLS, session |
-| `ircd-core` | Protocol parsing helpers + shared types |
-| `ircc` | CLI smoke client |
+| `ircd` | Server library and `ircd` binary |
+| `ircd-core` | Line parser, casemap, typed commands, tag helpers |
+| `ircc` | CLI smoke client, not a user-facing IRC app |
+| `fuzz/` | libFuzzer targets, outside the Cargo workspace |
 
-## Testing
+## Status
 
-Coverage (≥90% tarpaulin), proptest, doc tests, benches, and fuzz — see [`docs/TESTING.md`](docs/TESTING.md). Run heavy builds on **NewDev**, not Termux.
+The client protocol that this server advertises is implemented and covered by in-tree end-to-end tests. The living scorecard is [docs/PROTOCOL-MATRIX.md](docs/PROTOCOL-MATRIX.md).
 
-## Board
-
-Tasks project: [Mark × Cody — IRC client](https://tasks.decisionsciencecorp.com/admin/project.php?id=48)  
-Landscape research: [Doc #972](https://tasks.decisionsciencecorp.com/admin/doc.php?id=972)  
-Testing list: **369** (tasks #2203–#2208)
+Still out of scope: server linking, an in-daemon services package, channel keys, voice (`+v`), ban exceptions (`+e` / `+I`), and any capability the server does not advertise. A client that `CAP REQ`s an unknown capability gets `NAK`.
 
 ## License
 
 Copyright (c) 2026 Decision Science Corp.
 
-Program source (`crates/`, `fuzz/`, `tools/`, `.github/`, Cargo manifests, `tarpaulin.toml`) is under the **GNU Affero General Public License, version 3 only** ([`LICENSE-AGPL-3.0`](LICENSE-AGPL-3.0)).
+Program source (`crates/`, `fuzz/`, `tools/`, `.github/`, Cargo manifests, `tarpaulin.toml`) is under the **GNU Affero General Public License, version 3 only** ([LICENSE-AGPL-3.0](LICENSE-AGPL-3.0)).
 
-Everything else in this repository, including this README, `docs/`, and `config.example.toml`, is under **Creative Commons Attribution-ShareAlike 4.0 International** ([`LICENSE-CC-BY-SA-4.0`](LICENSE-CC-BY-SA-4.0)).
+Everything else in this repository, including this README, `docs/`, and `config.example.toml`, is under **Creative Commons Attribution-ShareAlike 4.0 International** ([LICENSE-CC-BY-SA-4.0](LICENSE-CC-BY-SA-4.0)).
 
-See [`LICENSE`](LICENSE). Upstream references retain their own licenses; we do not redistribute their source here.
+See [LICENSE](LICENSE). Upstream references keep their own licenses. This tree does not redistribute their source.
